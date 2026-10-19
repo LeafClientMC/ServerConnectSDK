@@ -1,0 +1,160 @@
+package com.leafclient.connect.sdk.velocity;
+
+import com.leafclient.connect.sdk.ConnectLog;
+import com.leafclient.connect.sdk.LeafConnect;
+import com.leafclient.connect.sdk.Limits;
+import com.leafclient.connect.sdk.Session;
+import com.leafclient.connect.sdk.Transport;
+import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
+import com.velocitypowered.api.event.connection.PluginMessageEvent;
+import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
+import com.velocitypowered.api.scheduler.ScheduledTask;
+import org.slf4j.Logger;
+
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Leaf Server Connect for a Velocity proxy. {@link #enable(Object, ProxyServer, Logger)} registers the
+ * {@link LeafConnect#CHANNEL} plugin channel and a listener, and flushes every 50 ms. Frames are at most
+ * {@link Limits#SERVER_MESSAGE_BYTES}. There is no reach check for block and entity panel clicks on a proxy.
+ */
+public final class VelocityConnect extends LeafConnect {
+
+    /** The Velocity channel identifier for {@link LeafConnect#CHANNEL}. */
+    public static final MinecraftChannelIdentifier IDENTIFIER = MinecraftChannelIdentifier.from(CHANNEL);
+
+    private final Object plugin;
+    private final ProxyServer proxy;
+    private final Listener listener = new Listener();
+    private ScheduledTask task;
+
+    private VelocityConnect(Object plugin, ProxyServer proxy, Logger logger) {
+        super(log(logger));
+        this.plugin = plugin;
+        this.proxy = proxy;
+    }
+
+    /**
+     * Starts Leaf Server Connect for a plugin. Call it from the proxy initialize event.
+     *
+     * @param plugin the plugin instance
+     * @param proxy the proxy server
+     * @param logger the logger the SDK writes to
+     * @return the running instance
+     */
+    public static VelocityConnect enable(Object plugin, ProxyServer proxy, Logger logger) {
+        VelocityConnect connect = new VelocityConnect(plugin, proxy, logger);
+        proxy.getChannelRegistrar().register(IDENTIFIER);
+        proxy.getEventManager().register(plugin, connect.listener);
+        connect.task = proxy.getScheduler().buildTask(plugin, connect::flush).repeat(50, TimeUnit.MILLISECONDS).schedule();
+        return connect;
+    }
+
+    /**
+     * Stops Leaf Server Connect: cancels the flush task, sends what is queued, unregisters the listener and ends every
+     * session. Call it on proxy shutdown.
+     */
+    public void disable() {
+        if (task != null) task.cancel();
+        task = null;
+        flush();
+        proxy.getEventManager().unregisterListener(plugin, listener);
+        for (Session s : sessions()) disconnect(s.id());
+    }
+
+    /**
+     * Returns the session of a player.
+     *
+     * @param player the player
+     * @return the session, or null if the player has no Leaf Client session
+     */
+    public Session session(Player player) {
+        return session(player.getUniqueId());
+    }
+
+    /**
+     * Tells whether a player has a Leaf Client session.
+     *
+     * @param player the player
+     * @return true if the player's client said hello with a supported protocol
+     */
+    public boolean isLeaf(Player player) {
+        return isLeaf(player.getUniqueId());
+    }
+
+    private static ConnectLog log(Logger logger) {
+        return new ConnectLog() {
+            @Override
+            public void info(String message) {
+                logger.info(message);
+            }
+
+            @Override
+            public void warn(String message) {
+                logger.warn(message);
+            }
+
+            @Override
+            public void debug(String message) {
+                logger.debug(message);
+            }
+
+            @Override
+            public void error(String message, Throwable error) {
+                logger.error(message, error);
+            }
+        };
+    }
+
+    private static final class PlayerTransport implements Transport {
+        private final Player player;
+
+        PlayerTransport(Player player) {
+            this.player = player;
+        }
+
+        @Override
+        public void send(byte[] data) {
+            if (player.isActive()) player.sendPluginMessage(IDENTIFIER, data);
+        }
+
+        @Override
+        public int maxMessageBytes() {
+            return Limits.SERVER_MESSAGE_BYTES;
+        }
+    }
+
+    /**
+     * The plugin message and disconnect listener that {@link #enable(Object, ProxyServer, Logger)} registers. It is
+     * public only because Velocity calls it; plugins do not use it.
+     */
+    public final class Listener {
+
+        private Listener() {}
+
+        /**
+         * Passes a message from a player on {@link #IDENTIFIER} to {@link LeafConnect#receive}.
+         *
+         * @param event the plugin message event
+         */
+        @Subscribe(async = false)
+        public void onMessage(PluginMessageEvent event) {
+            if (!IDENTIFIER.equals(event.getIdentifier())) return;
+            if (!(event.getSource() instanceof Player player)) return;
+            receive(player.getUniqueId(), player.getUsername(), player, event.getData(), new PlayerTransport(player));
+        }
+
+        /**
+         * Ends the session of a player who disconnected.
+         *
+         * @param event the disconnect event
+         */
+        @Subscribe(async = false)
+        public void onDisconnect(DisconnectEvent event) {
+            disconnect(event.getPlayer().getUniqueId());
+        }
+    }
+}

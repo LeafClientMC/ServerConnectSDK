@@ -1,0 +1,5 @@
+name: LeafConnectExample
+version: 0.1.0
+main: com.leafclient.connect.example.ExamplePlugin
+api-version: '1.13'
+description: Leaf Server Connect SDK example with a shop, a leaderboard, a form and a world panel
