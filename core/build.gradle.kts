@@ -3,10 +3,12 @@ description = "Leaf Server Connect SDK: builders, sessions, batching and click h
 val oldestGson = "com.google.code.gson:gson:2.2.4"
 val clientGson = "com.google.code.gson:gson:2.10.1"
 
-val clientSources = rootProject.file(providers.gradleProperty("leafClientSources").get())
+// The tests check every message against Leaf Client's own Server Connect parser, which is not public.
+// Without -PleafClientSources=<path to the client's src/main/java> they are skipped.
+val clientSources = providers.gradleProperty("leafClientSources").orNull?.let { rootProject.file(it) }
 
 val clientCore: SourceSet = sourceSets.create("clientCore") {
-    java.srcDir(clientSources)
+    if (clientSources != null) java.srcDir(clientSources)
     java.include("com/leafclient/connect/core/**")
 }
 
@@ -28,7 +30,7 @@ tasks.named<JavaCompile>("compileClientCoreJava") {
     doFirst {
         val parser = File(clientSources, "com/leafclient/connect/core/ConnectState.java")
         check(parser.isFile) {
-            "Leaf Client sources not found at $clientSources. Set -PleafClientSources=<LeafClientMod/src/main/java>."
+            "Leaf Client sources not found at $clientSources."
         }
     }
 }
@@ -60,4 +62,10 @@ val testOnOldestGson by tasks.registering(Test::class) {
 
 tasks.check {
     dependsOn(testOnOldestGson)
+}
+
+if (clientSources == null) {
+    listOf("compileClientCoreJava", "compileTestJava", "test", "testOnOldestGson").forEach {
+        tasks.named(it) { enabled = false }
+    }
 }

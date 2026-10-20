@@ -29,6 +29,15 @@ subprojects {
     }
 }
 
+configure(listOf(project(":core"), project(":bukkit"), project(":velocity"), project(":bungee"))) {
+    apply(plugin = "maven-publish")
+    extensions.configure<PublishingExtension> {
+        publications.create<MavenPublication>("maven") {
+            from(components["java"])
+        }
+    }
+}
+
 project(":bukkit") {
     description = "Leaf Server Connect SDK for Bukkit, Spigot, Paper and Purpur 1.8.8 to 26.x"
     dependencies {
