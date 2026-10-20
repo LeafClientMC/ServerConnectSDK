@@ -2,7 +2,7 @@ subprojects {
     apply(plugin = "java-library")
 
     group = "com.leafclient.connect"
-    version = "0.1.0"
+    version = "0.1.1"
 
     repositories {
         mavenCentral()

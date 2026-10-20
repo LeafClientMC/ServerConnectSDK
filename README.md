@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-a2f07b?style=flat-square&labelColor=111716" alt="License: MIT"></a>
-  <a href="https://github.com/LeafClientMC/ServerConnectSDK/releases/tag/v0.1.0"><img src="https://img.shields.io/github/v/tag/LeafClientMC/ServerConnectSDK?label=release&color=a2f07b&style=flat-square&labelColor=111716" alt="Release"></a>
+  <a href="https://github.com/LeafClientMC/ServerConnectSDK/releases/tag/v0.1.1"><img src="https://img.shields.io/github/v/tag/LeafClientMC/ServerConnectSDK?label=release&color=a2f07b&style=flat-square&labelColor=111716" alt="Release"></a>
   <a href="https://jitpack.io/#LeafClientMC/ServerConnectSDK"><img src="https://jitpack.io/v/LeafClientMC/ServerConnectSDK.svg" alt="JitPack"></a>
   <img src="https://img.shields.io/badge/Java-8%2B-a2f07b?style=flat-square&labelColor=111716" alt="Java 8+">
   <br>
@@ -124,7 +124,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.LeafClientMC.ServerConnectSDK:bukkit:v0.1.0")
+    implementation("com.github.LeafClientMC.ServerConnectSDK:bukkit:v0.1.1")
 }
 ```
 
@@ -142,7 +142,7 @@ dependencies {
     <dependency>
         <groupId>com.github.LeafClientMC.ServerConnectSDK</groupId>
         <artifactId>bukkit</artifactId>
-        <version>v0.1.0</version>
+        <version>v0.1.1</version>
     </dependency>
 </dependencies>
 
