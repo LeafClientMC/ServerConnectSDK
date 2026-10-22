@@ -55,7 +55,8 @@ This SDK is the Java side. It builds the JSON for you, checks it against the cli
 - **Toasts and waypoints.** Leaf notifications with up to 2 buttons, and server waypoints.
 - **Mod locks.** `Session.lockMods` turns off chosen client mods on your server and shows the player why.
 - **Checked before sending.** A value that breaks a client limit throws `InvalidUiException` with the field path, so the client never receives UI it would reject.
-- **Checked clicks.** Your handler runs only for clicks that pass the SDK checks: known panel, matching token, enabled button, cooldown, valid inputs and, on Paper, reach for world panels.
+- **Checked clicks.** Your handler runs only for clicks that pass the SDK checks: known panel, matching token, a button that sends clicks, data that one of its `Action.send` actions sends, enabled button, cooldown, valid inputs and, on Paper, reach and world for world panels.
+- **Client input limits.** Each player may send 40 messages per second after hello, with bursts of 80, and 32 clicks per second with bursts of 64; messages over the budget are dropped before they are read. Messages must be strict JSON objects, at most 16 KB and 64 levels deep. Typed text arrives with `§`, line breaks and line or paragraph separators removed or turned into spaces; text with other control or bidi characters is refused, and so is a starting value with them. Slider values must be on a step, as the client rounds them.
 - **Batching.** Messages queued in the same tick go out in one frame, large messages are split into chunks, and sending stays within the client rate limits. Sessions are thread safe.
 - **Old and new servers.** The core and paper modules target Java 8 and run with the Gson 2.2.4 that Spigot 1.8.8 ships. On Folia, each player's messages are sent from that player's own region thread. Behind a proxy, `onReady` runs again after every backend switch.
 
