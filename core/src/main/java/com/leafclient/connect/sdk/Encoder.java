@@ -1,5 +1,7 @@
 package com.leafclient.connect.sdk;
 
+import com.google.gson.JsonObject;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +63,7 @@ final class Encoder {
     boolean inScroll;
     final Map<String, String> ids = new LinkedHashMap<String, String>();
     final Map<String, ButtonSpec> buttonSpecs = new LinkedHashMap<String, ButtonSpec>();
+    final Map<String, JsonObject> buttonJson = new LinkedHashMap<String, JsonObject>();
     final Map<String, InputSpec> inputSpecs = new LinkedHashMap<String, InputSpec>();
 
     Encoder(String prefix, boolean inputsAllowed) {

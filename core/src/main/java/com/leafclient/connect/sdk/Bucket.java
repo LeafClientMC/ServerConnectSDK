@@ -24,15 +24,19 @@ final class Bucket {
         }
     }
 
-    boolean has(int n, long now) {
+    synchronized boolean has(int n, long now) {
         refill(now);
         return tokens >= n;
     }
 
-    boolean take(int n, long now) {
+    synchronized boolean take(int n, long now) {
         refill(now);
         if (tokens < n) return false;
         tokens -= n;
         return true;
+    }
+
+    synchronized void give(int n) {
+        tokens = Math.min(capacity, tokens + n);
     }
 }

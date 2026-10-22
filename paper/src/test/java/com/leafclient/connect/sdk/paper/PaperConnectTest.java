@@ -94,6 +94,7 @@ class PaperConnectTest {
         final List<String> cancelledTimers = new ArrayList<>();
         final List<String> sent = new ArrayList<>();
         final List<Thread> sentOn = new ArrayList<>();
+        final List<World> worlds = new ArrayList<>();
         PluginMessageListener listener;
         Listener events;
         Object entityScheduler;
@@ -124,6 +125,8 @@ class PaperConnectTest {
                         return plugins;
                     case "getScheduler":
                         return scheduler;
+                    case "getWorlds":
+                        return worlds;
                     default:
                         return null;
                 }
@@ -449,5 +452,38 @@ class PaperConnectTest {
         WorldAnchor anchor = anchor(WorldAnchor.Kind.ENTITY, 42, null);
         for (int i = 0; i < 3; i++) assertTrue(connect.inReach(s, anchor));
         assertEquals(1, scans[0]);
+    }
+
+    static World world(String name, World.Environment environment) {
+        return fake(World.class, (m, a) -> {
+            switch (m) {
+                case "getName":
+                    return name;
+                case "getEnvironment":
+                    return environment;
+                default:
+                    return null;
+            }
+        });
+    }
+
+    @Test
+    void dimensionWithoutWorldKeysIsSkippedForExtraWorldsAndUsesTheEnvironmentForLegacyClients() {
+        Server_ server = new Server_();
+        World main = world("world", World.Environment.NORMAL);
+        server.worlds.add(main);
+        World[] at = {world("world_nether", World.Environment.NETHER)};
+        PaperConnect connect = PaperConnect.enable(server.plugin, null);
+        UUID modernId = UUID.randomUUID();
+        UUID legacyId = UUID.randomUUID();
+        Player modern = fake(Player.class, (m, a) -> m.equals("getUniqueId") ? modernId : m.equals("getWorld") ? at[0] : m.equals("getName") ? "Steve" : null);
+        Player legacy = fake(Player.class, (m, a) -> m.equals("getUniqueId") ? legacyId : m.equals("getWorld") ? at[0] : m.equals("getName") ? "Alex" : null);
+        server.listener.onPluginMessageReceived(LeafConnect.CHANNEL, modern, HELLO);
+        server.listener.onPluginMessageReceived(LeafConnect.CHANNEL, legacy, ("{\"t\":\"hello\",\"v\":1,\"client\":{\"mc\":\"1.8.9\"},"
+                + "\"proto\":{\"min\":1,\"max\":1},\"caps\":[\"toast\"]}").getBytes(StandardCharsets.UTF_8));
+        assertEquals("minecraft:the_nether", connect.dimensionOf(connect.session(modern)));
+        at[0] = world("minigame", World.Environment.NORMAL);
+        assertNull(connect.dimensionOf(connect.session(modern)));
+        assertEquals("minecraft:overworld", connect.dimensionOf(connect.session(legacy)));
     }
 }

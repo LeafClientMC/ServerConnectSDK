@@ -74,6 +74,13 @@ class SecondAuditTest {
     }
 
     @Test
+    void numberLiteralsOver32CharactersMakeTheMessageInvalid() {
+        String digits32 = new String(new char[32]).replace('\0', '7');
+        assertTrue(Json.parseObject("{\"seq\":" + digits32 + "}", 64) != null);
+        assertEquals(null, Json.parseObject("{\"seq\":" + digits32 + "7}", 64));
+    }
+
+    @Test
     void cooldownLeftIsEnforcedAndZeroClearsAPress() {
         Session s = hello();
         s.send(Panel.create("p", Place.chat()).content(Ui.button("b", "Claim").cooldown(60000).cooldownLeft(30000)));

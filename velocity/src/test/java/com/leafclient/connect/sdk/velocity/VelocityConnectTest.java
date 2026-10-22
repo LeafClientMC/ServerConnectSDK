@@ -1,6 +1,7 @@
 package com.leafclient.connect.sdk.velocity;
 
 import com.velocitypowered.api.event.EventManager;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
@@ -90,6 +91,8 @@ class VelocityConnectTest {
                     return id;
                 case "getUsername":
                     return "Steve";
+                case "isActive":
+                    return true;
                 default:
                     return null;
             }
@@ -163,6 +166,8 @@ class VelocityConnectTest {
                     return id;
                 case "getUsername":
                     return "Steve";
+                case "isActive":
+                    return true;
                 default:
                     return null;
             }
@@ -175,6 +180,43 @@ class VelocityConnectTest {
             listener.onMessage(new PluginMessageEvent(steve, backend, VelocityConnect.IDENTIFIER, HELLO));
         }
         assertEquals(8, ready[0]);
+        connect.disable();
+    }
+
+    static Player player(UUID id, boolean[] active) {
+        return fake(Player.class, (m, a) -> {
+            switch (m) {
+                case "getUniqueId":
+                    return id;
+                case "getUsername":
+                    return "Steve";
+                case "isActive":
+                    return active[0];
+                default:
+                    return null;
+            }
+        });
+    }
+
+    @Test
+    void aMessageHandledAfterTheDisconnectLeavesNoSessionAndAnOldConnectionCannotEndTheNewOne() throws ReflectiveOperationException {
+        List<Object> listeners = new ArrayList<>();
+        VelocityConnect connect = VelocityConnect.enable(new Object(), proxy(new ArrayList<>(), listeners), fake(Logger.class, (m, a) -> null));
+        VelocityConnect.Listener listener = (VelocityConnect.Listener) listeners.get(0);
+        ChannelMessageSink backend = fake(ChannelMessageSink.class, (m, a) -> null);
+        UUID id = UUID.randomUUID();
+        boolean[] oldActive = {false};
+        Player old = player(id, oldActive);
+        listener.onMessage(new PluginMessageEvent(old, backend, VelocityConnect.IDENTIFIER, HELLO));
+        assertFalse(connect.isLeaf(id), "a session for a connection that already ended must not stay");
+        Field transports = VelocityConnect.class.getDeclaredField("transports");
+        transports.setAccessible(true);
+        assertTrue(((Map<?, ?>) transports.get(connect)).isEmpty());
+
+        Player fresh = player(id, new boolean[]{true});
+        listener.onMessage(new PluginMessageEvent(fresh, backend, VelocityConnect.IDENTIFIER, HELLO));
+        listener.onDisconnect(new DisconnectEvent(old, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN));
+        assertTrue(connect.isLeaf(id), "the old connection's disconnect must not end the new session");
         connect.disable();
     }
 }

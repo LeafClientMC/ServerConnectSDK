@@ -212,7 +212,8 @@ public final class PaperConnect extends LeafConnect {
     protected String dimensionOf(Session session) {
         Player player = session.player();
         World world = player.getWorld();
-        if (WORLD_KEY != null) {
+        boolean legacyClient = session.client().minecraftVersion().startsWith("1.8");
+        if (!legacyClient && WORLD_KEY != null) {
             try {
                 Object key = WORLD_KEY.invoke(world);
                 if (key != null) return key.toString();
@@ -220,6 +221,7 @@ public final class PaperConnect extends LeafConnect {
                 return null;
             }
         }
+        if (!legacyClient && !defaultWorld(world)) return null;
         switch (world.getEnvironment()) {
             case NORMAL:
                 return "minecraft:overworld";
@@ -230,6 +232,14 @@ public final class PaperConnect extends LeafConnect {
             default:
                 return null;
         }
+    }
+
+    private boolean defaultWorld(World world) {
+        java.util.List<World> worlds = plugin.getServer().getWorlds();
+        if (worlds.isEmpty()) return false;
+        String main = worlds.get(0).getName();
+        String name = world.getName();
+        return name.equals(main) || name.equals(main + "_nether") || name.equals(main + "_the_end");
     }
 
     private static Method worldKey() {

@@ -601,5 +601,6 @@ public final class Button extends Element<Button> {
                 Action.sentData(actions));
         spec.cooldownLeft = cooldownLeft;
         enc.buttonSpecs.put(id, spec);
+        enc.buttonJson.put(id, o);
     }
 }

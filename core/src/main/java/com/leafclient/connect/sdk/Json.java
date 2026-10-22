@@ -166,8 +166,10 @@ final class Json {
             }
             case STRING:
                 return new JsonPrimitive(r.nextString());
-            case NUMBER:
-                return new JsonPrimitive(new Num(r.nextString()));
+            case NUMBER: {
+                String number = r.nextString();
+                return number.length() > 32 ? null : new JsonPrimitive(new Num(number));
+            }
             case BOOLEAN:
                 return new JsonPrimitive(r.nextBoolean());
             case NULL:

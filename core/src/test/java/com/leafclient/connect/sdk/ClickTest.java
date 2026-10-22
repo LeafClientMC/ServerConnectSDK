@@ -91,6 +91,7 @@ class ClickTest {
         JsonObject stale = sim.clickJson("chat", "p", "x", null, false);
         s.send(panel);
         sim.flush();
+        sim.advance(Session.TOKEN_GRACE_MS + 1);
         sim.receive(stale);
         assertEquals(Rejection.Reason.BAD_TOKEN, lastReason());
         JsonObject forged = sim.clickJson("chat", "p", "x", null, false);

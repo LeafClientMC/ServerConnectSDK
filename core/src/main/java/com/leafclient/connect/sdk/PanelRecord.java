@@ -21,6 +21,9 @@ final class PanelRecord {
     Object world;
     String placeWorld;
     String placeDim;
+    private String oldToken;
+    private PanelRecord oldRecord;
+    private long oldTokenUntil;
 
     PanelRecord(String id, String token, Place<?> place, int[] size, String group, boolean connectionScope, long ttlMs, long now,
                 Map<String, Encoder.ButtonSpec> buttons, Map<String, Encoder.InputSpec> inputs, Map<String, String> elementTypes) {
@@ -44,6 +47,19 @@ final class PanelRecord {
         Place.Anchored<?> a = place instanceof Place.Anchored ? (Place.Anchored<?>) place : null;
         this.placeWorld = a == null ? null : a.worldId();
         this.placeDim = a == null ? null : a.dim();
+    }
+
+    void keepOldToken(String token, PanelRecord record, long until) {
+        record.oldToken = null;
+        record.oldRecord = null;
+        this.oldToken = token;
+        this.oldRecord = record;
+        this.oldTokenUntil = until;
+    }
+
+    PanelRecord oldTokenRecord(String token, long now) {
+        if (oldToken == null || now > oldTokenUntil || !oldToken.equals(token)) return null;
+        return oldRecord;
     }
 
     boolean needsCurrentWorld() {

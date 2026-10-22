@@ -283,6 +283,14 @@ public final class Panel extends Message {
                 new LinkedHashMap<String, Encoder.ButtonSpec>(enc.buttonSpecs), new LinkedHashMap<String, Encoder.InputSpec>(enc.inputSpecs),
                 new LinkedHashMap<String, String>(enc.ids));
         if (record.needsCurrentWorld()) record.world = session.worldKey();
+        long now = session.now();
+        for (Encoder.ButtonSpec b : record.buttons.values()) {
+            if (b.cooldownLeft != null) continue;
+            long left = session.cooldownLeft(id, b, now);
+            if (left <= 0) continue;
+            b.cooldownLeft = left;
+            enc.buttonJson.get(b.id).addProperty("cooldown_left", left);
+        }
         session.checkPanelLimits(record);
         return new Outgoing(msg, "panel.set " + id, new Runnable() {
             @Override

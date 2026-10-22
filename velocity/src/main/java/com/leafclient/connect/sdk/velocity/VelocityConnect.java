@@ -168,6 +168,13 @@ public final class VelocityConnect extends LeafConnect {
                 transports.put(player.getUniqueId(), t);
             }
             receive(player.getUniqueId(), player.getUsername(), player, event.getData(), t);
+            if (!player.isActive()) forget(player);
+        }
+
+        private void forget(Player player) {
+            disconnect(player.getUniqueId(), player);
+            PlayerTransport t = transports.get(player.getUniqueId());
+            if (t != null && t.player == player) transports.remove(player.getUniqueId(), t);
         }
 
         /**
@@ -177,10 +184,7 @@ public final class VelocityConnect extends LeafConnect {
          */
         @Subscribe(async = false)
         public void onDisconnect(DisconnectEvent event) {
-            Player player = event.getPlayer();
-            disconnect(player.getUniqueId());
-            PlayerTransport t = transports.get(player.getUniqueId());
-            if (t != null && t.player == player) transports.remove(player.getUniqueId(), t);
+            forget(event.getPlayer());
         }
 
         /**

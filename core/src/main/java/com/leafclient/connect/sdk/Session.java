@@ -34,6 +34,7 @@ public final class Session {
     private static final int TOKEN_LENGTH = 12;
     private static final long TTL_GRACE_MS = 3000;
     private static final long COOLDOWN_TOLERANCE_MS = 250;
+    static final long TOKEN_GRACE_MS = 3000;
     private static final int MAX_PRESSES = Limits.PANELS * Limits.BUTTONS_PER_PANEL + Limits.TOAST_BUTTONS * 32;
     static final int MESSAGES_PER_SECOND = 40;
     private static final Set<String> RAW_TYPES = new HashSet<String>(java.util.Arrays.asList(
@@ -665,6 +666,18 @@ public final class Session {
         values.clear();
         unsent = null;
         for (String dropped : outbox.clearQueued()) panels.remove(dropped);
+        long now = now();
+        for (PanelRecord p : new ArrayList<PanelRecord>(panels.values())) {
+            if (p.expired(now)) continue;
+            Patch patch = null;
+            for (Encoder.ButtonSpec b : p.buttons.values()) {
+                long left = cooldownLeft(p.id, b, now);
+                if (left <= 0) continue;
+                if (patch == null) patch = Patch.of(p.id);
+                patch.set(b.id, "cooldown_left", left);
+            }
+            if (patch != null) send(patch);
+        }
     }
 
     synchronized void updatePrefs(Prefs prefs) {
@@ -686,15 +699,25 @@ public final class Session {
     }
 
     void putPanel(PanelRecord record) {
-        panels.remove(record.id);
-        panels.put(record.id, record);
         long now = now();
+        PanelRecord old = panels.remove(record.id);
+        if (old != null && !old.token.equals(record.token) && !old.expired(now)) record.keepOldToken(old.token, old, now + TOKEN_GRACE_MS);
+        panels.put(record.id, record);
         for (Encoder.ButtonSpec b : record.buttons.values()) {
-            if (b.cooldownLeft == null) continue;
-            String key = record.id + '\n' + b.id;
-            if (b.cooldownLeft > 0 && b.cooldownMs > 0) lastPress.put(key, now - b.cooldownMs + Math.min(b.cooldownLeft, b.cooldownMs));
-            else lastPress.remove(key);
+            if (b.cooldownLeft != null) setCooldownLeft(record.id, b.id, b.cooldownMs, b.cooldownLeft, now);
         }
+    }
+
+    long cooldownLeft(String panelId, Encoder.ButtonSpec b, long now) {
+        if (!b.onePressOneClick || b.cooldownMs <= 0) return 0;
+        Long last = lastPress.get(panelId + '\n' + b.id);
+        return last == null ? 0 : Math.max(0, b.cooldownMs - (now - last));
+    }
+
+    void setCooldownLeft(String panelId, String buttonId, long cooldownMs, long left, long now) {
+        String key = panelId + '\n' + buttonId;
+        if (left > 0 && cooldownMs > 0) lastPress.put(key, now - cooldownMs + Math.min(left, cooldownMs));
+        else lastPress.remove(key);
     }
 
     void putToast(String toastId, String token, Map<String, Encoder.ButtonSpec> buttons) {
@@ -814,7 +837,11 @@ public final class Session {
         PanelRecord p = panels.get(panel);
         if (p == null) return unknown(panel, button, seq);
         if (p.expiresAt > 0 && now > p.expiresAt + TTL_GRACE_MS) return reject(Rejection.Reason.EXPIRED, panel, button, seq, "panel ttl ended");
-        if (!p.token.equals(token)) return reject(Rejection.Reason.BAD_TOKEN, panel, button, seq, "token does not match the last panel.set or patch of ", panel);
+        if (!p.token.equals(token)) {
+            PanelRecord previous = p.oldTokenRecord(token, now);
+            if (previous == null) return reject(Rejection.Reason.BAD_TOKEN, panel, button, seq, "token does not match the last panel.set or patch of ", panel);
+            p = previous;
+        }
         if (!p.in.equals(src)) return reject(Rejection.Reason.WRONG_SOURCE, panel, button, seq, "click came from ", src, " but the panel is in ", p.in);
         Encoder.ButtonSpec b = p.buttons.get(button);
         if (b == null) return reject(Rejection.Reason.UNKNOWN_BUTTON, panel, button, seq, "panel ", panel, " has no button ", button);
@@ -826,7 +853,7 @@ public final class Session {
         }
         String pressKey = panel + '\n' + button;
         Long last = b.onePressOneClick && b.cooldownMs > 0 ? lastPress.get(pressKey) : null;
-        if (last != null && now - last < b.cooldownMs - COOLDOWN_TOLERANCE_MS) {
+        if (last != null && now - last < b.cooldownMs - Math.max(COOLDOWN_TOLERANCE_MS, b.cooldownMs / 10)) {
             return reject(Rejection.Reason.COOLDOWN, panel, button, seq, "pressed ", now - last, " ms after the last press, cooldown ", b.cooldownMs, " ms");
         }
         FormValues inputs = FormValues.EMPTY;

@@ -254,7 +254,7 @@ public class LeafConnect {
      * @param playerId the player UUID
      */
     protected void allowHello(UUID playerId) {
-        hellos.remove(playerId);
+        helloRate(playerId).give(1);
     }
 
     /**
@@ -348,6 +348,25 @@ public class LeafConnect {
     public void disconnect(UUID playerId) {
         hellos.remove(playerId);
         endSession(playerId);
+    }
+
+    /**
+     * Ends the session of a player only if it belongs to this platform player object, so a late message from an old
+     * connection cannot end the session of the player's new one.
+     *
+     * @param playerId the player UUID
+     * @param player the platform player object of the connection that ended
+     */
+    protected void disconnect(UUID playerId, Object player) {
+        Session s;
+        synchronized (sessions) {
+            s = sessions.get(playerId);
+            if (s != null && s.player() != player) return;
+            hellos.remove(playerId);
+            if (s == null) return;
+            sessions.remove(playerId);
+        }
+        fire(quitListeners, s, "quit", s);
     }
 
     private void endSession(UUID playerId) {
