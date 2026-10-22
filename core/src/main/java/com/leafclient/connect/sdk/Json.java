@@ -2,6 +2,7 @@ package com.leafclient.connect.sdk;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.stream.JsonReader;
@@ -125,48 +126,96 @@ final class Json {
                 || (c >= '‪' && c <= '‮') || (c >= '⁦' && c <= '⁩');
     }
 
-    static boolean strictWithin(String text, int maxDepth) {
+    static JsonObject parseObject(String text, int maxDepth) {
         JsonReader r = new JsonReader(new StringReader(text));
         try {
-            int depth = 0;
-            do {
-                switch (r.peek()) {
-                    case BEGIN_OBJECT:
-                        if (++depth > maxDepth) return false;
-                        r.beginObject();
-                        break;
-                    case BEGIN_ARRAY:
-                        if (++depth > maxDepth) return false;
-                        r.beginArray();
-                        break;
-                    case END_OBJECT:
-                        depth--;
-                        r.endObject();
-                        break;
-                    case END_ARRAY:
-                        depth--;
-                        r.endArray();
-                        break;
-                    case NAME:
-                        r.nextName();
-                        break;
-                    case STRING:
-                    case NUMBER:
-                        r.nextString();
-                        break;
-                    case BOOLEAN:
-                        r.nextBoolean();
-                        break;
-                    case NULL:
-                        r.nextNull();
-                        break;
-                    default:
-                        return false;
-                }
-            } while (depth > 0);
-            return r.peek() == JsonToken.END_DOCUMENT;
+            if (r.peek() != JsonToken.BEGIN_OBJECT) return null;
+            JsonElement e = read(r, 1, maxDepth);
+            return e != null && r.peek() == JsonToken.END_DOCUMENT ? e.getAsJsonObject() : null;
         } catch (IOException | RuntimeException e) {
-            return false;
+            return null;
+        }
+    }
+
+    private static JsonElement read(JsonReader r, int depth, int maxDepth) throws IOException {
+        switch (r.peek()) {
+            case BEGIN_OBJECT: {
+                if (depth > maxDepth) return null;
+                JsonObject o = new JsonObject();
+                r.beginObject();
+                while (r.hasNext()) {
+                    String name = r.nextName();
+                    JsonElement v = read(r, depth + 1, maxDepth);
+                    if (v == null) return null;
+                    o.add(name, v);
+                }
+                r.endObject();
+                return o;
+            }
+            case BEGIN_ARRAY: {
+                if (depth > maxDepth) return null;
+                JsonArray a = new JsonArray();
+                r.beginArray();
+                while (r.hasNext()) {
+                    JsonElement v = read(r, depth + 1, maxDepth);
+                    if (v == null) return null;
+                    a.add(v);
+                }
+                r.endArray();
+                return a;
+            }
+            case STRING:
+                return new JsonPrimitive(r.nextString());
+            case NUMBER:
+                return new JsonPrimitive(new Num(r.nextString()));
+            case BOOLEAN:
+                return new JsonPrimitive(r.nextBoolean());
+            case NULL:
+                r.nextNull();
+                return JsonNull.INSTANCE;
+            default:
+                return null;
+        }
+    }
+
+    private static final class Num extends Number {
+        private final String value;
+
+        Num(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public int intValue() {
+            try {
+                return Integer.parseInt(value);
+            } catch (NumberFormatException e) {
+                return (int) longValue();
+            }
+        }
+
+        @Override
+        public long longValue() {
+            try {
+                return Long.parseLong(value);
+            } catch (NumberFormatException e) {
+                return (long) doubleValue();
+            }
+        }
+
+        @Override
+        public float floatValue() {
+            return Float.parseFloat(value);
+        }
+
+        @Override
+        public double doubleValue() {
+            return Double.parseDouble(value);
+        }
+
+        @Override
+        public String toString() {
+            return value;
         }
     }
 

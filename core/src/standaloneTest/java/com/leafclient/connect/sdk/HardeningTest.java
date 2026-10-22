@@ -12,6 +12,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -138,8 +139,9 @@ class HardeningTest {
         for (int i = 0; i < 8000; i++) deep.append('[');
         for (int i = 0; i < 8000; i++) deep.append(']');
         receive(deep.toString());
-        assertFalse(Json.strictWithin(deep.toString(), 64));
-        assertTrue(Json.strictWithin("{\"a\":\"[[[[[[\",\"b\":[1,{\"c\":2}]}", 3));
+        assertNull(Json.parseObject("{\"a\":" + deep + "}", 64));
+        assertNotNull(Json.parseObject("{\"a\":\"[[[[[[\",\"b\":[1,{\"c\":2}]}", 3));
+        assertNull(Json.parseObject("{\"a\":\"[[[[[[\",\"b\":[1,{\"c\":[]}]}", 3));
         assertTrue(lines.warnings.isEmpty());
     }
 

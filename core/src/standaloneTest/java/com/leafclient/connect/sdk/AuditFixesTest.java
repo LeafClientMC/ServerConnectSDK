@@ -268,7 +268,8 @@ class AuditFixesTest {
         for (int i = 0; i < 8000; i++) deep.append('[');
         for (int i = 0; i < 8000; i++) deep.append(']');
         deep.append('}');
-        assertFalse(Json.strictWithin(deep.toString(), 64));
+        assertNull(Json.parseObject(deep.toString(), 64));
+        assertDoesNotThrow(() -> Json.parseObject("{\"n\":1e99999}", 64).get("n").getAsInt());
         assertDoesNotThrow(() -> receive(deep.toString()));
         assertTrue(closed.isEmpty());
         receive(CLOSED_MENU);

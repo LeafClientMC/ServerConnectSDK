@@ -2,7 +2,6 @@ package com.leafclient.connect.sdk;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -242,17 +241,10 @@ public class LeafConnect {
         }
     }
 
-    @SuppressWarnings("deprecation")
     private void handle(UUID playerId, String playerName, Object player, byte[] data, Transport transport) {
-        JsonObject msg;
-        String text = new String(data, Json.UTF_8);
-        try {
-            if (!Json.strictWithin(text, 64)) throw new IllegalArgumentException("not strict JSON or too deep");
-            JsonElement e = new JsonParser().parse(text);
-            if (!e.isJsonObject()) throw new IllegalArgumentException("not an object");
-            msg = e.getAsJsonObject();
-        } catch (RuntimeException e) {
-            if (log.debugEnabled()) log.debug("ignored a message from " + playerName + " that is not a JSON object");
+        JsonObject msg = Json.parseObject(new String(data, Json.UTF_8), 64);
+        if (msg == null) {
+            if (log.debugEnabled()) log.debug("ignored a message from " + playerName + " that is not a strict JSON object within 64 levels");
             return;
         }
         String type = Json.getString(msg, "t");
