@@ -103,6 +103,7 @@ class TokenGraceTest {
             connect.receive(id, "Steve", player, hello, wire);
             Session s = connect.session(id);
             s.send(Panel.create("p", Place.chat()).scope(Panel.Scope.CONNECTION).ttl(5000).content(Ui.button("b", "B").cooldown(600000)));
+            connect.flush();
             PanelRecord record = s.panelRecord("p");
             s.setCooldownLeft("p", "b", 600000, 600000, clock[0]);
             clock[0] = record.expiresAt - k;
