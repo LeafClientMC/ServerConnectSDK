@@ -56,7 +56,8 @@ This SDK is the Java side. It builds the JSON for you, checks it against the cli
 - **Mod locks.** `Session.lockMods` turns off chosen client mods on your server and shows the player why.
 - **Checked before sending.** A value that breaks a client limit throws `InvalidUiException` with the field path, so the client never receives UI it would reject.
 - **Checked clicks.** Your handler runs only for clicks that pass the SDK checks: known panel, matching token, a button that sends clicks, data that one of its `Action.send` actions sends, enabled button, cooldown, valid inputs and, on Paper, reach and world for world panels.
-- **Client input limits.** Each player may send 40 messages per second after hello, with bursts of 80, and 32 clicks per second with bursts of 64; messages over the budget are dropped before they are read. Messages must be strict JSON objects, at most 16 KB and 64 levels deep. Typed text arrives with `§`, line breaks and line or paragraph separators removed or turned into spaces; text with other control or bidi characters is refused, and so is a starting value with them. Slider values must be on a step, as the client rounds them.
+- **Client input limits.** Each player may send 40 messages per second after hello, with bursts of 80, and 32 clicks per second with bursts of 64; messages over the budget are dropped before they are read. Messages must be strict JSON objects, at most 16 KB and 64 levels deep. Typed text arrives with `§`, line breaks and line or paragraph separators removed or turned into spaces; text with other control or bidi characters is refused, and so is a starting value with them. Slider values must be on a step, as the client rounds them. Numbers longer than 32 characters make the message invalid.
+- **Cooldowns and tokens.** The server enforces button cooldowns as the client shows them: `Button.cooldown` starts one on every accepted press, `Button.cooldownLeft` and a patched `cooldown_left` set the time left (0 clears it), and a press up to 10% of the cooldown early (at least 250 ms) still counts. Sending a panel again sends the time left of each running cooldown with it, and after a server switch the SDK sends it again for panels with `Panel.Scope.CONNECTION`, because the client clears its cooldowns on both. When a panel is sent again or its token is rotated, clicks with the previous token are still accepted for 3 seconds and checked against the version of the panel they were pressed on.
 - **Batching.** Messages queued in the same tick go out in one frame, large messages are split into chunks, and sending stays within the client rate limits. Sessions are thread safe.
 - **Old and new servers.** The core and paper modules target Java 8 and run with the Gson 2.2.4 that Spigot 1.8.8 ships. On Folia, each player's messages are sent from that player's own region thread. Behind a proxy, `onReady` runs again after every backend switch.
 
@@ -297,7 +298,7 @@ public final class NetworkBar {
 }
 ```
 
-`Panel.Scope.CONNECTION` keeps the bar when the player switches backend servers.
+`Panel.Scope.CONNECTION` keeps the bar when the player switches backend servers. On Velocity the SDK listeners, and so your `onReady`, click handlers and other listeners, run on the player connection's event loop thread: do not block in them, and move slow work such as database calls to the proxy scheduler.
 
 ### BungeeCord and Waterfall
 
