@@ -40,6 +40,7 @@ public final class ExamplePlugin extends JavaPlugin {
     public void onEnable() {
         connect = PaperConnect.enable(this);
         connect.onReady(this::sendUi);
+        connect.onQuit(s -> coins.remove(s.id()));
     }
 
     /**

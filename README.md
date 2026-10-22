@@ -104,7 +104,9 @@ The full guide is on the Leaf website: <https://leafclient.com/docs/#server-conn
 | `velocity` | `com.leafclient.connect.sdk.velocity` | Velocity proxies | 17+ |
 | `bungee` | `com.leafclient.connect.sdk.bungee` | BungeeCord and Waterfall proxies | 8+ |
 
-Each platform module includes `core`. Shade the one you need into your plugin jar. The SDK uses the Gson library your server already ships, and registers the `leafclient:connect` channel in code, so `plugin.yml` needs no channels entry.
+Each platform module includes `core`. Shade the one you need into your plugin jar and relocate `com.leafclient.connect.sdk` to a package of your own, as the snippets below do, so two plugins that both shade the SDK do not load each other's copy. The SDK uses the Gson library your server already ships, and registers the `leafclient:connect` channel in code, so `plugin.yml` needs no channels entry.
+
+Run one SDK instance per player connection: one plugin on the backend server, or one plugin on the proxy, not both. Each instance keeps its own rate limits for the client, so two instances talking to the same client can together exceed them. On Velocity and BungeeCord the SDK handles the client's `leafclient:connect` messages itself and does not forward them to the backend.
 
 ### Install
 
@@ -128,6 +130,10 @@ repositories {
 
 dependencies {
     implementation("com.github.LeafClientMC.ServerConnectSDK:paper:v0.2.0")
+}
+
+tasks.shadowJar {
+    relocate("com.leafclient.connect.sdk", "com.example.shop.libs.leafconnect")
 }
 ```
 
@@ -159,6 +165,14 @@ dependencies {
                 <execution>
                     <phase>package</phase>
                     <goals><goal>shade</goal></goals>
+                    <configuration>
+                        <relocations>
+                            <relocation>
+                                <pattern>com.leafclient.connect.sdk</pattern>
+                                <shadedPattern>com.example.shop.libs.leafconnect</shadedPattern>
+                            </relocation>
+                        </relocations>
+                    </configuration>
                 </execution>
             </executions>
         </plugin>
@@ -182,13 +196,19 @@ import com.leafclient.connect.sdk.Ui;
 import com.leafclient.connect.sdk.paper.PaperConnect;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 public final class ShopPlugin extends JavaPlugin {
+    private final Map<UUID, Integer> coins = new ConcurrentHashMap<>();
     private PaperConnect connect;
 
     @Override
     public void onEnable() {
         connect = PaperConnect.enable(this);
         connect.onReady(this::sendUi);
+        connect.onQuit(s -> coins.remove(s.id()));
     }
 
     @Override
@@ -201,21 +221,33 @@ public final class ShopPlugin extends JavaPlugin {
                 .subtitle("{n:coins} coins")
                 .icon(Icon.item("minecraft:emerald"))
                 .add(Menu.tab("shop", "Shop").icon(Icon.leaf("shop"))));
-        s.setValue("coins", 1000);
+        s.setValue("coins", coins.computeIfAbsent(s.id(), id -> 1000));
         s.send(Panel.create("shop", Place.menu("shop")).content(
                 Ui.text("&lWelcome!"),
                 Ui.button("boots", "Speed Boots")
                         .icon(Icon.item("minecraft:diamond_boots"))
                         .enabledWhen(Condition.ge("coins", 500))
-                        .onClick(click -> click.session().send(
-                                Toast.create("bought").title("Bought Speed Boots").kind(Toast.Kind.SUCCESS)))));
+                        .onClick(click -> buy(click.session(), "Speed Boots", 500))));
+    }
+
+    private void buy(Session s, String item, int price) {
+        int balance = coins.getOrDefault(s.id(), 0);
+        if (balance < price) {
+            s.send(Toast.create("bought").title("You need " + price + " coins").kind(Toast.Kind.WARN));
+            return;
+        }
+        coins.put(s.id(), balance - price);
+        s.setValue("coins", balance - price);
+        s.send(Toast.create("bought").title("Bought " + item).kind(Toast.Kind.SUCCESS));
     }
 }
 ```
 
+`enabledWhen` only greys the button out on the client. A modified client can still send the click, so the click handler checks the balance on the server before it takes the coins.
+
 `onReady` runs when a Leaf client says hello. Everything sent in the same tick goes out in one batch. On Paper, Spigot and Bukkit, listeners and click handlers run on the main server thread, so you can call the Bukkit API in them.
 
-**Folia.** Add `folia-supported: true` to your `plugin.yml`. `PaperConnect` detects Folia by itself and sends each player's messages from that player's own region thread, so the SDK calls stay the same. Listeners and click handlers run on the region thread of the player who sent the message. Use Folia's schedulers before you change blocks, entities or players in other regions, and keep shared plugin data in thread safe collections.
+**Folia.** Add `folia-supported: true` to your `plugin.yml`. `PaperConnect` detects Folia by itself and sends each player's messages from that player's own region thread, so the SDK calls stay the same. Listeners and click handlers run on the region thread of the player who sent the message. Use Folia's schedulers before you change blocks, entities or players in other regions, and keep shared plugin data in thread safe collections. `onQuit` listeners run on the thread that handles the player's quit, except during `disable()`, which ends every session on the thread that disables the plugin; schedule work on the player's entity scheduler there if it touches the player.
 
 ### Velocity
 
