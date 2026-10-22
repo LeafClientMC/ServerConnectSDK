@@ -8,6 +8,7 @@ import com.leafclient.connect.sdk.Transport;
 import com.leafclient.connect.sdk.WorldAnchor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -47,6 +48,7 @@ public final class PaperConnect extends LeafConnect {
     private final ConcurrentHashMap<UUID, PlayerLink> links = new ConcurrentHashMap<UUID, PlayerLink>();
     private final ConcurrentHashMap<UUID, PlayerTransport> transports = new ConcurrentHashMap<UUID, PlayerTransport>();
     private final ConcurrentHashMap<UUID, WeakReference<Entity>> targets = new ConcurrentHashMap<UUID, WeakReference<Entity>>();
+    private static final Method WORLD_KEY = worldKey();
     private final Method ownedByCurrentRegion;
     private BukkitTask task;
     private volatile boolean reachCheck = true;
@@ -204,6 +206,38 @@ public final class PaperConnect extends LeafConnect {
     protected Object worldOf(Session session) {
         Player player = session.player();
         return player.getWorld().getUID();
+    }
+
+    @Override
+    protected String dimensionOf(Session session) {
+        Player player = session.player();
+        World world = player.getWorld();
+        if (WORLD_KEY != null) {
+            try {
+                Object key = WORLD_KEY.invoke(world);
+                if (key != null) return key.toString();
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                return null;
+            }
+        }
+        switch (world.getEnvironment()) {
+            case NORMAL:
+                return "minecraft:overworld";
+            case NETHER:
+                return "minecraft:the_nether";
+            case THE_END:
+                return "minecraft:the_end";
+            default:
+                return null;
+        }
+    }
+
+    private static Method worldKey() {
+        try {
+            return World.class.getMethod("getKey");
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
     }
 
     @Override

@@ -109,7 +109,8 @@ public final class Session {
             return size() > MAX_PRESSES;
         }
     };
-    private final Bucket clickRate = new Bucket(32, 32);
+    private final Bucket clickRate = new Bucket(32, 64);
+    private String worldId;
     final Bucket messageRate = new Bucket(MESSAGES_PER_SECOND, 2 * MESSAGES_PER_SECOND);
     final Throttle warnings = new Throttle(0.2, 5);
     final Throttle failures = new Throttle(0.2, 5);
@@ -412,10 +413,15 @@ public final class Session {
      * @return this session
      * @throws InvalidUiException if the id is not valid
      */
-    public synchronized Session world(String worldId) {
+    public synchronized Session world(final String worldId) {
         JsonObject o = Json.envelope("world.set");
         o.addProperty("id", Check.id(worldId, "world.set.id"));
-        return control(o, "world.set " + worldId, null);
+        return control(o, "world.set " + worldId, new Runnable() {
+            @Override
+            public void run() {
+                Session.this.worldId = worldId;
+            }
+        });
     }
 
     /**
@@ -682,6 +688,13 @@ public final class Session {
     void putPanel(PanelRecord record) {
         panels.remove(record.id);
         panels.put(record.id, record);
+        long now = now();
+        for (Encoder.ButtonSpec b : record.buttons.values()) {
+            if (b.cooldownLeft == null) continue;
+            String key = record.id + '\n' + b.id;
+            if (b.cooldownLeft > 0 && b.cooldownMs > 0) lastPress.put(key, now - b.cooldownMs + Math.min(b.cooldownLeft, b.cooldownMs));
+            else lastPress.remove(key);
+        }
     }
 
     void putToast(String toastId, String token, Map<String, Encoder.ButtonSpec> buttons) {
@@ -808,7 +821,7 @@ public final class Session {
         if (b.data.isEmpty()) return reject(Rejection.Reason.UNKNOWN_BUTTON, panel, button, seq, "button ", button, " sends no clicks");
         if (!b.enabled) return reject(Rejection.Reason.DISABLED, panel, button, seq, "button ", button, " was sent disabled");
         if (!b.data.contains(data)) return badData(panel, button, seq);
-        if (p.world != null && p.anchor != null && p.anchor.kind() == WorldAnchor.Kind.BLOCK && !p.world.equals(connect.worldOf(this))) {
+        if (p.anchor != null && p.anchor.kind() == WorldAnchor.Kind.BLOCK && !inWorldOf(p)) {
             return reject(Rejection.Reason.OUT_OF_REACH, panel, button, seq, "player is not in the world of block panel ", panel);
         }
         String pressKey = panel + '\n' + button;
@@ -848,7 +861,8 @@ public final class Session {
         JsonPrimitive p = v.getAsJsonPrimitive();
         switch (spec.kind) {
             case TEXT:
-                return p.isString() && p.getAsString().length() <= spec.maxChars && plainText(p.getAsString()) ? p.getAsString() : null;
+                if (!p.isString() || p.getAsString().length() > spec.maxChars || !TextInput.clientCanSend(p.getAsString())) return null;
+                return TextInput.clean(p.getAsString());
             case TOGGLE:
                 return p.isBoolean() ? p.getAsBoolean() : null;
             case CHOICE:
@@ -857,10 +871,7 @@ public final class Session {
                 if (!p.isNumber()) return null;
                 double d = p.getAsDouble();
                 if (Double.isNaN(d) || Double.isInfinite(d) || d < spec.min - 1e-6 || d > spec.max + 1e-6) return null;
-                if (spec.step > 0 && Math.abs(d - spec.max) > 1e-6) {
-                    double steps = (d - spec.min) / spec.step;
-                    if (Math.abs(steps - Math.rint(steps)) > 1e-6 * Math.max(1, Math.abs(steps))) return null;
-                }
+                if (spec.step > 0 && Math.abs(Slider.snap(spec.min, spec.max, spec.step, d) - d) > 1e-9) return null;
                 return d;
             }
             default:
@@ -868,12 +879,14 @@ public final class Session {
         }
     }
 
-    private static boolean plainText(String s) {
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '§' || Json.unsafe(c)) return false;
+    private boolean inWorldOf(PanelRecord p) {
+        if (p.placeWorld != null && !p.placeWorld.equals(worldId)) return false;
+        if (p.placeDim != null) {
+            String dim = connect.dimensionOf(this);
+            if (dim != null && !p.placeDim.equals(dim)) return false;
         }
-        return true;
+        if (p.placeWorld != null || p.placeDim != null) return true;
+        return p.world == null || p.world.equals(connect.worldOf(this));
     }
 
     private Resolved accept(Click click, Consumer<Click> handler) {

@@ -15,6 +15,7 @@ final class Encoder {
         long cooldownMs;
         final boolean onePressOneClick;
         final Set<String> data;
+        Long cooldownLeft;
 
         ButtonSpec(String id, Consumer<Click> handler, boolean enabled, long cooldownMs, boolean onePressOneClick, Set<String> data) {
             this.id = id;

@@ -596,6 +596,14 @@ public abstract class Place<T extends Place<T>> {
             return self();
         }
 
+        String worldId() {
+            return worldId;
+        }
+
+        String dim() {
+            return dim;
+        }
+
         void encodeAnchored(JsonObject o) {
             if (offset != null) o.add("offset", Json.numbers(offset));
             if (view != null) Json.num(o, "view", view);

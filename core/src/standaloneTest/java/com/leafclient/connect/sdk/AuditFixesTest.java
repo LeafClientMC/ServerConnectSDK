@@ -243,19 +243,20 @@ class AuditFixesTest {
     }
 
     @Test
-    void formInputsRejectControlCharactersSectionSignsAndOffStepSliderValues() {
+    void formInputsRejectWhatTheClientNeverSendsAndCleanTheRest() {
         Session s = hello();
         s.send(Panel.create("form", Place.menu("t")).content(Ui.input("team"), Ui.slider("vol", 0, 10).step(2), Ui.button("go", "Go")));
         String token = token("form");
-        click("menu", "form", "go", token, ",\"inputs\":{\"team\":\"a\\n[Server thread/INFO]: forged\"}");
-        click("menu", "form", "go", token, ",\"inputs\":{\"team\":\"\\u00a7kred\"}");
+        click("menu", "form", "go", token, ",\"inputs\":{\"team\":\"a\\r[Server thread/INFO]: forged\"}");
+        click("menu", "form", "go", token, ",\"inputs\":{\"team\":\"left\\u202eright\"}");
         click("menu", "form", "go", token, ",\"inputs\":{\"vol\":3}");
         assertTrue(clicks.isEmpty());
         assertEquals(3, rejected.size());
         for (Rejection r : rejected) assertEquals(Rejection.Reason.BAD_INPUTS, r.reason());
-        click("menu", "form", "go", token, ",\"inputs\":{\"team\":\"Leafers\",\"vol\":4}");
+        click("menu", "form", "go", token, ",\"inputs\":{\"team\":\"a\\n[Server thread/INFO]: \\u00a7kred\",\"vol\":4}");
         click("menu", "form", "go", token, ",\"inputs\":{\"vol\":10}");
         assertEquals(2, clicks.size());
+        assertEquals("a [Server thread/INFO]: kred", clicks.get(0).inputs().text("team"));
     }
 
     @Test

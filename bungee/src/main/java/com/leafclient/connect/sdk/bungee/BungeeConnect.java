@@ -8,6 +8,7 @@ import com.leafclient.connect.sdk.Transport;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
 import net.md_5.bungee.api.event.PlayerDisconnectEvent;
 import net.md_5.bungee.api.event.PluginMessageEvent;
+import net.md_5.bungee.api.event.ServerConnectedEvent;
 import net.md_5.bungee.api.plugin.Listener;
 import net.md_5.bungee.api.plugin.Plugin;
 import net.md_5.bungee.api.scheduler.ScheduledTask;
@@ -31,6 +32,7 @@ public final class BungeeConnect extends LeafConnect {
     private final Bridge bridge = new Bridge();
     private final ConcurrentHashMap<UUID, PlayerTransport> transports = new ConcurrentHashMap<UUID, PlayerTransport>();
     private ScheduledTask task;
+    private boolean claimed;
 
     private BungeeConnect(Plugin plugin) {
         super(ConnectLog.of(plugin.getLogger()));
@@ -45,6 +47,8 @@ public final class BungeeConnect extends LeafConnect {
      */
     public static BungeeConnect enable(Plugin plugin) {
         final BungeeConnect connect = new BungeeConnect(plugin);
+        claimChannel();
+        connect.claimed = true;
         plugin.getProxy().registerChannel(CHANNEL);
         plugin.getProxy().getPluginManager().registerListener(plugin, connect.bridge);
         connect.task = plugin.getProxy().getScheduler().schedule(plugin, new Runnable() {
@@ -65,7 +69,10 @@ public final class BungeeConnect extends LeafConnect {
         task = null;
         flush();
         plugin.getProxy().getPluginManager().unregisterListener(bridge);
-        plugin.getProxy().unregisterChannel(CHANNEL);
+        if (claimed) {
+            claimed = false;
+            if (releaseChannel()) plugin.getProxy().unregisterChannel(CHANNEL);
+        }
         for (Session s : sessions()) disconnect(s.id());
         transports.clear();
     }
@@ -150,6 +157,17 @@ public final class BungeeConnect extends LeafConnect {
             disconnect(player.getUniqueId());
             PlayerTransport t = transports.get(player.getUniqueId());
             if (t != null && t.player == player) transports.remove(player.getUniqueId(), t);
+        }
+
+        /**
+         * Gives a player who joined a backend server a fresh hello allowance, because the client says hello again on
+         * every server.
+         *
+         * @param event the server connected event
+         */
+        @EventHandler
+        public void onServerConnected(ServerConnectedEvent event) {
+            allowHello(event.getPlayer().getUniqueId());
         }
     }
 }

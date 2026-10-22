@@ -19,6 +19,8 @@ final class PanelRecord {
     int[] size;
     WorldAnchor anchor;
     Object world;
+    String placeWorld;
+    String placeDim;
 
     PanelRecord(String id, String token, Place<?> place, int[] size, String group, boolean connectionScope, long ttlMs, long now,
                 Map<String, Encoder.ButtonSpec> buttons, Map<String, Encoder.InputSpec> inputs, Map<String, String> elementTypes) {
@@ -39,6 +41,13 @@ final class PanelRecord {
         this.rightSide = place.rightSide();
         this.tab = place.tab();
         this.anchor = WorldAnchor.of(place, size);
+        Place.Anchored<?> a = place instanceof Place.Anchored ? (Place.Anchored<?>) place : null;
+        this.placeWorld = a == null ? null : a.worldId();
+        this.placeDim = a == null ? null : a.dim();
+    }
+
+    boolean needsCurrentWorld() {
+        return anchor != null && anchor.kind() == WorldAnchor.Kind.BLOCK && placeWorld == null && placeDim == null;
     }
 
     void rearm(long ttlMs, long now) {

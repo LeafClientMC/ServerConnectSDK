@@ -54,8 +54,36 @@ public final class TextInput extends InputElement<TextInput> {
      * @throws InvalidUiException if the value is null
      */
     public TextInput value(String value) {
-        this.value = Check.notNull(value, "input.value");
+        Check.notNull(value, "input.value");
+        if (!clientCanSend(value)) throw Check.fail("input.value", "has control or bidi characters the client removes");
+        this.value = value;
         return this;
+    }
+
+    static boolean clientCanSend(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ((Character.isISOControl(c) && c != '\n') || (c >= '‪' && c <= '‮') || (c >= '⁦' && c <= '⁩')
+                    || c == '‎' || c == '‏') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static String clean(String s) {
+        StringBuilder out = null;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            boolean drop = c == '§' || c == '؜';
+            boolean space = c == '\n' || c == ' ' || c == ' ';
+            if ((drop || space) && out == null) {
+                out = new StringBuilder(s.length());
+                out.append(s, 0, i);
+            }
+            if (out != null && !drop) out.append(space ? ' ' : c);
+        }
+        return out == null ? s : out.toString();
     }
 
     /**
@@ -80,6 +108,6 @@ public final class TextInput extends InputElement<TextInput> {
             o.addProperty("value", value);
         }
         if (placeholder != null) o.add("placeholder", Check.text(placeholder, 128, enc.at(path + ".placeholder")).toJson());
-        return new Encoder.InputSpec(id, Encoder.InputKind.TEXT, max, null, 0, 0, 0, value == null ? "" : value);
+        return new Encoder.InputSpec(id, Encoder.InputKind.TEXT, max, null, 0, 0, 0, value == null ? "" : clean(value));
     }
 }

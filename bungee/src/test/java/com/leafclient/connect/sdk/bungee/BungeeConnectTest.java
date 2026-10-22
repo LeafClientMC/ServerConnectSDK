@@ -6,6 +6,7 @@ import net.md_5.bungee.api.config.ServerInfo;
 import net.md_5.bungee.api.connection.ProxiedPlayer;
 import net.md_5.bungee.api.connection.Server;
 import net.md_5.bungee.api.event.PluginMessageEvent;
+import net.md_5.bungee.api.event.ServerConnectedEvent;
 import net.md_5.bungee.api.plugin.Listener;
 import net.md_5.bungee.api.plugin.Plugin;
 import net.md_5.bungee.api.plugin.PluginDescription;
@@ -21,11 +22,13 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -83,5 +86,69 @@ class BungeeConnectTest {
 
         connect.disable();
         verify(proxy).unregisterChannel(LeafConnect.CHANNEL);
+    }
+
+    static ProxyServer proxy() {
+        ProxyServer proxy = mock(ProxyServer.class);
+        when(proxy.getLogger()).thenReturn(Logger.getLogger("BungeeConnectTest"));
+        when(proxy.getPluginManager()).thenReturn(mock(PluginManager.class));
+        TaskScheduler scheduler = mock(TaskScheduler.class);
+        when(scheduler.schedule(any(Plugin.class), any(Runnable.class), anyLong(), anyLong(), any(TimeUnit.class))).thenReturn(mock(ScheduledTask.class));
+        when(proxy.getScheduler()).thenReturn(scheduler);
+        return proxy;
+    }
+
+    static Plugin plugin(ProxyServer proxy, String name) {
+        PluginDescription description = new PluginDescription();
+        description.setName(name);
+        Logger logger = Logger.getLogger(name);
+        return new Plugin(proxy, description) {
+            @Override
+            public ProxyServer getProxy() {
+                return proxy;
+            }
+
+            @Override
+            public Logger getLogger() {
+                return logger;
+            }
+        };
+    }
+
+    static BungeeConnect.Bridge bridge(BungeeConnect connect) throws ReflectiveOperationException {
+        Field f = BungeeConnect.class.getDeclaredField("bridge");
+        f.setAccessible(true);
+        return (BungeeConnect.Bridge) f.get(connect);
+    }
+
+    @Test
+    void disablingOnePluginKeepsTheChannelForAnotherPluginsCopy() {
+        ProxyServer proxy = proxy();
+        BungeeConnect first = BungeeConnect.enable(plugin(proxy, "First"));
+        BungeeConnect second = BungeeConnect.enable(plugin(proxy, "Second"));
+        first.disable();
+        verify(proxy, never()).unregisterChannel(LeafConnect.CHANNEL);
+        second.disable();
+        verify(proxy).unregisterChannel(LeafConnect.CHANNEL);
+    }
+
+    @Test
+    void aServerSwitchGivesTheClientAFreshHello() throws ReflectiveOperationException {
+        ProxyServer proxy = proxy();
+        BungeeConnect connect = BungeeConnect.enable(plugin(proxy, "Test"));
+        int[] ready = new int[1];
+        connect.onReady(s -> ready[0]++);
+        BungeeConnect.Bridge bridge = bridge(connect);
+        ProxiedPlayer steve = mock(ProxiedPlayer.class);
+        when(steve.getUniqueId()).thenReturn(UUID.randomUUID());
+        when(steve.getName()).thenReturn("Steve");
+        Server backend = mock(Server.class);
+        when(backend.getInfo()).thenReturn(mock(ServerInfo.class));
+        for (int i = 0; i < 8; i++) {
+            bridge.onServerConnected(new ServerConnectedEvent(steve, backend));
+            bridge.onMessage(new PluginMessageEvent(steve, backend, LeafConnect.CHANNEL, HELLO));
+        }
+        assertEquals(8, ready[0]);
+        connect.disable();
     }
 }

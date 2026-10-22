@@ -8,6 +8,7 @@ import com.leafclient.connect.sdk.Transport;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
+import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
@@ -33,6 +34,7 @@ public final class VelocityConnect extends LeafConnect {
     private final Listener listener = new Listener();
     private final ConcurrentHashMap<UUID, PlayerTransport> transports = new ConcurrentHashMap<>();
     private ScheduledTask task;
+    private boolean claimed;
 
     private VelocityConnect(Object plugin, ProxyServer proxy, Logger logger) {
         super(log(logger));
@@ -50,6 +52,8 @@ public final class VelocityConnect extends LeafConnect {
      */
     public static VelocityConnect enable(Object plugin, ProxyServer proxy, Logger logger) {
         VelocityConnect connect = new VelocityConnect(plugin, proxy, logger);
+        claimChannel();
+        connect.claimed = true;
         proxy.getChannelRegistrar().register(IDENTIFIER);
         proxy.getEventManager().register(plugin, connect.listener);
         connect.task = proxy.getScheduler().buildTask(plugin, connect::flush).repeat(50, TimeUnit.MILLISECONDS).schedule();
@@ -65,7 +69,10 @@ public final class VelocityConnect extends LeafConnect {
         task = null;
         flush();
         proxy.getEventManager().unregisterListener(plugin, listener);
-        proxy.getChannelRegistrar().unregister(IDENTIFIER);
+        if (claimed) {
+            claimed = false;
+            if (releaseChannel()) proxy.getChannelRegistrar().unregister(IDENTIFIER);
+        }
         for (Session s : sessions()) disconnect(s.id());
         transports.clear();
     }
@@ -174,6 +181,17 @@ public final class VelocityConnect extends LeafConnect {
             disconnect(player.getUniqueId());
             PlayerTransport t = transports.get(player.getUniqueId());
             if (t != null && t.player == player) transports.remove(player.getUniqueId(), t);
+        }
+
+        /**
+         * Gives a player who joined a backend server a fresh hello allowance, because the client says hello again on
+         * every server.
+         *
+         * @param event the server connected event
+         */
+        @Subscribe(async = false)
+        public void onServerConnected(ServerConnectedEvent event) {
+            allowHello(event.getPlayer().getUniqueId());
         }
     }
 }

@@ -28,6 +28,7 @@ public class LeafConnect {
     public static final int PROTOCOL = 1;
     /** Largest message the SDK reads from a client, in bytes. Larger ones are ignored. */
     public static final int CLIENT_MESSAGE_BYTES = 16 * 1024;
+    private static final String CHANNEL_USERS = "leafclient.connect.channelUsers";
 
     private final ConnectLog log;
     private final LongSupplier clock;
@@ -231,8 +232,13 @@ public class LeafConnect {
             if (log.debugEnabled()) log.debug("ignored a " + (data == null ? 0 : data.length) + " byte message from " + playerName);
             return;
         }
+        Session known = sessions.get(playerId);
+        if (known != null ? !known.messageRate.take(1, now()) : !helloRate(playerId).take(1, now())) {
+            if (log.debugEnabled()) log.debug("ignored a message from " + playerName + ": over the message budget");
+            return;
+        }
         try {
-            handle(playerId, playerName, player, data, transport);
+            handle(playerId, playerName, player, data, transport, known == null);
         } catch (RuntimeException e) {
             Session s = sessions.get(playerId);
             String line = (s != null ? s.warnings : warnings).admit("could not handle a Server Connect message from " + playerName + ": "
@@ -241,7 +247,60 @@ public class LeafConnect {
         }
     }
 
-    private void handle(UUID playerId, String playerName, Object player, byte[] data, Transport transport) {
+    /**
+     * Gives a player a fresh hello allowance, so their next hellos are not throttled. The proxy adapters call it when a
+     * player switches backend servers, because the client says hello again on every server.
+     *
+     * @param playerId the player UUID
+     */
+    protected void allowHello(UUID playerId) {
+        hellos.remove(playerId);
+    }
+
+    /**
+     * Counts one more SDK instance that uses {@link #CHANNEL} on this proxy. The count is shared by every copy of the
+     * SDK in the JVM, also copies shaded into other plugins.
+     *
+     * @return true if this is the only instance
+     */
+    protected static boolean claimChannel() {
+        return channelUsers(1) == 1;
+    }
+
+    /**
+     * Counts one SDK instance less that uses {@link #CHANNEL}. The proxy adapters unregister the channel only when this
+     * returns true, so a plugin that disables does not take the channel from another plugin's copy of the SDK.
+     *
+     * @return true if no instance uses the channel any more
+     */
+    protected static boolean releaseChannel() {
+        return channelUsers(-1) == 0;
+    }
+
+    private static int channelUsers(int change) {
+        java.util.Properties p = System.getProperties();
+        synchronized (p) {
+            int n;
+            try {
+                n = Integer.parseInt(p.getProperty(CHANNEL_USERS, "0"));
+            } catch (NumberFormatException e) {
+                n = 0;
+            }
+            n = Math.max(0, n + change);
+            p.setProperty(CHANNEL_USERS, Integer.toString(n));
+            return n;
+        }
+    }
+
+    private Bucket helloRate(UUID playerId) {
+        Bucket rate = hellos.get(playerId);
+        if (rate != null) return rate;
+        Bucket fresh = new Bucket(0.5, 4);
+        rate = hellos.putIfAbsent(playerId, fresh);
+        return rate == null ? fresh : rate;
+    }
+
+    private void handle(UUID playerId, String playerName, Object player, byte[] data, Transport transport, boolean helloCharged) {
         JsonObject msg = Json.parseObject(new String(data, Json.UTF_8), 64);
         if (msg == null) {
             if (log.debugEnabled()) log.debug("ignored a message from " + playerName + " that is not a strict JSON object within 64 levels");
@@ -250,17 +309,12 @@ public class LeafConnect {
         String type = Json.getString(msg, "t");
         if (type == null) return;
         if ("hello".equals(type)) {
-            hello(playerId, playerName, player, msg, transport);
+            hello(playerId, playerName, player, msg, transport, helloCharged);
             return;
         }
         Session s = sessions.get(playerId);
         if (s == null) {
             if (log.debugEnabled()) log.debug("ignored " + Json.clean(type, 64) + " from " + playerName + " before hello");
-            return;
-        }
-        if (!s.messageRate.take(1, now())) {
-            if (log.debugEnabled()) log.debug("ignored " + Json.clean(type, 64) + " from " + playerName + ": more than "
-                    + Session.MESSAGES_PER_SECOND + " messages per second");
             return;
         }
         if ("click".equals(type)) {
@@ -355,6 +409,18 @@ public class LeafConnect {
         return null;
     }
 
+    /**
+     * Returns the dimension the player is in, such as {@code minecraft:the_nether}, as the client names it. A block
+     * panel placed with {@link Place.Anchored#dim(String)} is clickable only in that dimension. This base version
+     * returns null, which skips the check; platform adapters override it.
+     *
+     * @param session the session
+     * @return the dimension id, or null if unknown
+     */
+    protected String dimensionOf(Session session) {
+        return null;
+    }
+
     void failed(Session s, String message, Throwable error) {
         String line = (s != null ? s.failures : failures).admit(message, now());
         if (line != null) log.error(line, error);
@@ -365,20 +431,14 @@ public class LeafConnect {
         return listener;
     }
 
-    private void hello(UUID playerId, String playerName, Object player, JsonObject msg, Transport transport) {
-        ClientInfo info = ClientInfo.parse(msg);
-        JsonElement prefsJson = msg.get("prefs");
-        Prefs prefs = Prefs.parse(prefsJson != null && prefsJson.isJsonObject() ? prefsJson.getAsJsonObject() : null);
-        Bucket rate = hellos.get(playerId);
-        if (rate == null) {
-            Bucket fresh = new Bucket(0.5, 4);
-            rate = hellos.putIfAbsent(playerId, fresh);
-            if (rate == null) rate = fresh;
-        }
-        if (!rate.take(1, now())) {
+    private void hello(UUID playerId, String playerName, Object player, JsonObject msg, Transport transport, boolean charged) {
+        if (!charged && !helloRate(playerId).take(1, now())) {
             if (log.debugEnabled()) log.debug("ignored a hello from " + playerName + ": too many hellos");
             return;
         }
+        ClientInfo info = ClientInfo.parse(msg);
+        JsonElement prefsJson = msg.get("prefs");
+        Prefs prefs = Prefs.parse(prefsJson != null && prefsJson.isJsonObject() ? prefsJson.getAsJsonObject() : null);
         if (!info.speaks(PROTOCOL)) {
             String line = warnings.admit(playerName + " uses Leaf Server Connect protocol " + info.protocolMin() + " to " + info.protocolMax()
                     + ", this plugin speaks " + PROTOCOL + "; no UI is sent to them", now());

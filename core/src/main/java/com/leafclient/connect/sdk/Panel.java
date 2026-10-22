@@ -282,7 +282,7 @@ public final class Panel extends Message {
         final PanelRecord record = new PanelRecord(id, tok, place, size, group, scope == Scope.CONNECTION, ttl == null ? 0 : ttl, session.now(),
                 new LinkedHashMap<String, Encoder.ButtonSpec>(enc.buttonSpecs), new LinkedHashMap<String, Encoder.InputSpec>(enc.inputSpecs),
                 new LinkedHashMap<String, String>(enc.ids));
-        if (record.anchor != null && record.anchor.kind() == WorldAnchor.Kind.BLOCK) record.world = session.worldKey();
+        if (record.needsCurrentWorld()) record.world = session.worldKey();
         session.checkPanelLimits(record);
         return new Outgoing(msg, "panel.set " + id, new Runnable() {
             @Override
