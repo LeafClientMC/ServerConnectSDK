@@ -1,4 +1,4 @@
-package com.leafclient.connect.sdk.bukkit;
+package com.leafclient.connect.sdk.paper;
 
 import com.leafclient.connect.sdk.ConnectLog;
 import com.leafclient.connect.sdk.LeafConnect;
@@ -19,54 +19,80 @@ import org.bukkit.plugin.messaging.Messenger;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.util.Queue;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
 /**
- * Leaf Server Connect for Bukkit, Spigot, Paper and Purpur. {@link #enable(Plugin)} registers the
+ * Leaf Server Connect for Paper, Folia, Spigot, Bukkit and Purpur. {@link #enable(Plugin)} registers the
  * {@link LeafConnect#CHANNEL} plugin channel and a quit listener, and flushes every tick. Frames are at most
  * {@link Limits#SERVER_MESSAGE_BYTES}, or {@link Limits#LEGACY_MESSAGE_BYTES} on servers whose plugin message limit is
  * 32766 bytes or less. Clicks on block and entity panels are checked for reach (see {@link #reachCheck(boolean)}).
+ *
+ * <p>On Folia there is no main thread, so each Leaf player gets a task on their own entity scheduler instead of one
+ * global timer. The task flushes that player's session every tick and sends the frames from the thread that owns the
+ * player, in the order they were queued. Frames queued from any other thread go out on the player's next tick.
+ * Listeners and click handlers run on the player's region thread.
  */
-public final class BukkitConnect extends LeafConnect {
+public final class PaperConnect extends LeafConnect {
 
     private final Plugin plugin;
     private final int maxMessageBytes;
     private final Bridge bridge = new Bridge();
+    private final PlayerScheduler playerScheduler;
+    private final ConcurrentHashMap<UUID, PlayerLink> links = new ConcurrentHashMap<UUID, PlayerLink>();
     private BukkitTask task;
     private volatile boolean reachCheck = true;
 
-    private BukkitConnect(Plugin plugin) {
+    private PaperConnect(Plugin plugin, PlayerScheduler playerScheduler) {
         super(ConnectLog.of(plugin.getLogger()));
         this.plugin = plugin;
+        this.playerScheduler = playerScheduler;
         this.maxMessageBytes = serverMessageLimit();
     }
 
     /**
-     * Starts Leaf Server Connect for a plugin. Call it from {@code onEnable}. Logs go to the plugin logger.
+     * Starts Leaf Server Connect for a plugin. Call it from {@code onEnable}. Logs go to the plugin logger. On Folia
+     * the plugin also needs {@code folia-supported: true} in its {@code plugin.yml}.
      *
      * @param plugin the plugin
      * @return the running instance
      */
-    public static BukkitConnect enable(Plugin plugin) {
-        BukkitConnect connect = new BukkitConnect(plugin);
+    public static PaperConnect enable(Plugin plugin) {
+        return enable(plugin, FoliaScheduler.isFolia(PaperConnect.class.getClassLoader()) ? FoliaScheduler.create() : null);
+    }
+
+    /**
+     * Starts the SDK with a per player scheduler (Folia), or with one Bukkit timer when it is null.
+     */
+    static PaperConnect enable(Plugin plugin, PlayerScheduler playerScheduler) {
+        final PaperConnect connect = new PaperConnect(plugin, playerScheduler);
         Messenger messenger = plugin.getServer().getMessenger();
         messenger.registerOutgoingPluginChannel(plugin, CHANNEL);
         messenger.registerIncomingPluginChannel(plugin, CHANNEL, connect.bridge);
         plugin.getServer().getPluginManager().registerEvents(connect.bridge, plugin);
-        connect.task = plugin.getServer().getScheduler().runTaskTimer(plugin, new Runnable() {
-            @Override
-            public void run() {
-                connect.flush();
-            }
-        }, 1L, 1L);
+        if (playerScheduler == null) {
+            connect.task = plugin.getServer().getScheduler().runTaskTimer(plugin, new Runnable() {
+                @Override
+                public void run() {
+                    connect.flush();
+                }
+            }, 1L, 1L);
+        }
         return connect;
     }
 
     /**
-     * Stops Leaf Server Connect: cancels the flush task, sends what is queued, unregisters the channel and listener,
-     * and ends every session. Call it from {@code onDisable}.
+     * Stops Leaf Server Connect: cancels the flush tasks, sends what is queued, unregisters the channel and listener,
+     * and ends every session. Call it from {@code onDisable}. On Folia, frames still queued are dropped, because only
+     * the thread that owns a player may send to them.
      */
     public void disable() {
         if (task != null) task.cancel();
         task = null;
+        for (PlayerLink link : links.values()) link.cancel();
+        links.clear();
         flush();
         HandlerList.unregisterAll(bridge);
         Messenger messenger = plugin.getServer().getMessenger();
@@ -101,7 +127,7 @@ public final class BukkitConnect extends LeafConnect {
      * @param enabled false to accept clicks from any distance
      * @return this instance
      */
-    public BukkitConnect reachCheck(boolean enabled) {
+    public PaperConnect reachCheck(boolean enabled) {
         this.reachCheck = enabled;
         return this;
     }
@@ -118,8 +144,9 @@ public final class BukkitConnect extends LeafConnect {
 
     /**
      * Checks that the player's eyes are within {@link WorldAnchor#maxClickDistance()} of the panel, using the block
-     * position, or the current position of the entity or player plus the offset. A missing entity, or a player in
-     * another world, is out of reach.
+     * position, or the current position of the entity or player plus the offset. The entity or player is looked up only
+     * among the entities near the clicking player, which on Folia are in the player's own region. A missing entity, or
+     * one that is not near the player, is out of reach.
      *
      * @param session the session of the player who clicked
      * @param anchor where the clicked panel is
@@ -139,23 +166,8 @@ public final class BukkitConnect extends LeafConnect {
                 y = anchor.y();
                 z = anchor.z();
                 break;
-            case PLAYER: {
-                Player target = plugin.getServer().getPlayer(anchor.player());
-                if (target == null || !target.getWorld().equals(player.getWorld())) return false;
-                Location at = target.getLocation();
-                x = at.getX() + anchor.offsetX();
-                y = at.getY() + anchor.offsetY();
-                z = at.getZ() + anchor.offsetZ();
-                break;
-            }
             default: {
-                Entity target = null;
-                for (Entity e : player.getWorld().getEntities()) {
-                    if (e.getEntityId() == anchor.entityId()) {
-                        target = e;
-                        break;
-                    }
-                }
+                Entity target = nearby(player, anchor);
                 if (target == null) return false;
                 Location at = target.getLocation();
                 x = at.getX() + anchor.offsetX();
@@ -171,6 +183,16 @@ public final class BukkitConnect extends LeafConnect {
         return dx * dx + dy * dy + dz * dz <= max * max;
     }
 
+    static Entity nearby(Player player, WorldAnchor anchor) {
+        boolean byPlayer = anchor.kind() == WorldAnchor.Kind.PLAYER;
+        if (byPlayer ? player.getUniqueId().equals(anchor.player()) : player.getEntityId() == anchor.entityId()) return player;
+        double max = anchor.maxClickDistance();
+        for (Entity e : player.getNearbyEntities(max + Math.abs(anchor.offsetX()), max + Math.abs(anchor.offsetY()) + 2, max + Math.abs(anchor.offsetZ()))) {
+            if (byPlayer ? e instanceof Player && e.getUniqueId().equals(anchor.player()) : e.getEntityId() == anchor.entityId()) return e;
+        }
+        return null;
+    }
+
     static int serverMessageLimit() {
         try {
             int max = Messenger.class.getField("MAX_MESSAGE_SIZE").getInt(null);
@@ -178,6 +200,18 @@ public final class BukkitConnect extends LeafConnect {
         } catch (ReflectiveOperationException | RuntimeException e) {
             return Limits.LEGACY_MESSAGE_BYTES;
         }
+    }
+
+    private Transport transport(Player player) {
+        if (playerScheduler == null) return new PlayerTransport(player);
+        UUID id = player.getUniqueId();
+        PlayerLink link = links.get(id);
+        if (link != null && link.player == player) return link;
+        PlayerLink fresh = new PlayerLink(player);
+        PlayerLink old = links.put(id, fresh);
+        if (old != null) old.cancel();
+        fresh.start();
+        return fresh;
     }
 
     private final class PlayerTransport implements Transport {
@@ -199,8 +233,67 @@ public final class BukkitConnect extends LeafConnect {
     }
 
     /**
-     * The plugin message and quit listener that {@link #enable(Plugin)} registers. It is public only because Bukkit
-     * calls it; plugins do not use it.
+     * The Folia transport of one player. {@link #send} only queues the frame. The task on the player's entity
+     * scheduler flushes the session and sends the queue in order, on the thread that owns the player.
+     */
+    private final class PlayerLink implements Transport {
+        private final Player player;
+        private final Queue<byte[]> pending = new ConcurrentLinkedQueue<byte[]>();
+        private volatile Runnable cancel;
+
+        PlayerLink(Player player) {
+            this.player = player;
+        }
+
+        void start() {
+            cancel = playerScheduler.everyTick(plugin, player, new Runnable() {
+                @Override
+                public void run() {
+                    tick();
+                }
+            }, new Runnable() {
+                @Override
+                public void run() {
+                    links.remove(player.getUniqueId(), PlayerLink.this);
+                }
+            });
+        }
+
+        void cancel() {
+            Runnable c = cancel;
+            cancel = null;
+            if (c != null) c.run();
+        }
+
+        void tick() {
+            Session s = session(player.getUniqueId());
+            if (s != null && s.player() == player) s.flush();
+            byte[] frame;
+            while ((frame = pending.poll()) != null) {
+                try {
+                    if (player.isOnline()) player.sendPluginMessage(plugin, CHANNEL, frame);
+                } catch (RuntimeException e) {
+                    pending.clear();
+                    log().error("could not send a Server Connect message to " + player.getName(), e);
+                    return;
+                }
+            }
+        }
+
+        @Override
+        public void send(byte[] data) {
+            pending.add(data);
+        }
+
+        @Override
+        public int maxMessageBytes() {
+            return maxMessageBytes;
+        }
+    }
+
+    /**
+     * The plugin message and quit listener that {@link #enable(Plugin)} registers. It is public only because the
+     * server calls it; plugins do not use it.
      */
     public final class Bridge implements Listener, PluginMessageListener {
 
@@ -216,7 +309,7 @@ public final class BukkitConnect extends LeafConnect {
         @Override
         public void onPluginMessageReceived(String channel, Player player, byte[] message) {
             if (!CHANNEL.equals(channel)) return;
-            receive(player.getUniqueId(), player.getName(), player, message, new PlayerTransport(player));
+            receive(player.getUniqueId(), player.getName(), player, message, transport(player));
         }
 
         /**
@@ -226,7 +319,10 @@ public final class BukkitConnect extends LeafConnect {
          */
         @EventHandler(priority = EventPriority.MONITOR)
         public void onQuit(PlayerQuitEvent event) {
-            disconnect(event.getPlayer().getUniqueId());
+            Player player = event.getPlayer();
+            disconnect(player.getUniqueId());
+            PlayerLink link = links.get(player.getUniqueId());
+            if (link != null && link.player == player && links.remove(player.getUniqueId(), link)) link.cancel();
         }
     }
 }

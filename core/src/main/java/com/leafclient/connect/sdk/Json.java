@@ -52,7 +52,64 @@ final class Json {
     }
 
     static int utf8Length(String s) {
-        return s.getBytes(UTF_8).length;
+        int n = 0;
+        int len = s.length();
+        for (int i = 0; i < len; i++) {
+            char c = s.charAt(i);
+            if (c < 0x80) {
+                n++;
+            } else if (c < 0x800) {
+                n += 2;
+            } else if (Character.isHighSurrogate(c) && i + 1 < len && Character.isLowSurrogate(s.charAt(i + 1))) {
+                n += 4;
+                i++;
+            } else if (Character.isSurrogate(c)) {
+                n++;
+            } else {
+                n += 3;
+            }
+        }
+        return n;
+    }
+
+    static Long integer(JsonElement e) {
+        if (e == null || !e.isJsonPrimitive() || !e.getAsJsonPrimitive().isNumber()) return null;
+        try {
+            return new java.math.BigDecimal(e.getAsString()).longValueExact();
+        } catch (ArithmeticException | NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    static String clean(String s, int max) {
+        if (s == null) return null;
+        int len = Math.min(s.length(), max);
+        StringBuilder sb = new StringBuilder(len + 3);
+        for (int i = 0; i < len; i++) {
+            char c = s.charAt(i);
+            sb.append(Character.isISOControl(c) || c == ' ' || c == ' ' ? ' ' : c);
+        }
+        if (s.length() > max) sb.append("...");
+        return sb.toString();
+    }
+
+    static boolean tooDeep(byte[] data, int max) {
+        int depth = 0;
+        boolean inString = false;
+        for (int i = 0; i < data.length; i++) {
+            byte b = data[i];
+            if (inString) {
+                if (b == '\\') i++;
+                else if (b == '"') inString = false;
+            } else if (b == '"') {
+                inString = true;
+            } else if (b == '{' || b == '[') {
+                if (++depth > max) return true;
+            } else if (b == '}' || b == ']') {
+                depth--;
+            }
+        }
+        return false;
     }
 
     static int depth(JsonElement e) {

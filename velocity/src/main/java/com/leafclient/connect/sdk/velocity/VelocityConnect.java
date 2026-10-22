@@ -103,6 +103,11 @@ public final class VelocityConnect extends LeafConnect {
             }
 
             @Override
+            public boolean debugEnabled() {
+                return logger.isDebugEnabled();
+            }
+
+            @Override
             public void error(String message, Throwable error) {
                 logger.error(message, error);
             }

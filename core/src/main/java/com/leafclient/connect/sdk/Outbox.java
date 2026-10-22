@@ -4,13 +4,19 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 final class Outbox {
 
@@ -18,27 +24,76 @@ final class Outbox {
     static final int RATE_BURST = (int) (Limits.MESSAGES_BURST * 0.8);
     static final long OPEN_MARGIN_MS = 150;
     static final int[] TYPE_BURST = {16, 16, 2};
+    static final int MAX_WAITING_MESSAGES = 512;
     private static final int PANELS = 0;
     private static final int VALUES = 1;
     private static final int TOASTS = 2;
+    private static final int BATCH_OVERHEAD = batchPrefix("").length() + 2;
 
     static final class Item {
-        final String json;
-        final int bytes;
+        String json;
+        int bytes;
         final String label;
         final String type;
         final boolean alone;
+        final String panel;
+        final int[] need;
+        final Map<String, JsonElement> set;
+        final Set<String> del;
 
         Item(String json, String label, String type) {
-            this(json, label, type, false);
+            this(json, Json.utf8Length(json), label, type, false, null, null);
         }
 
-        Item(String json, String label, String type, boolean alone) {
+        Item(String json, int bytes, String label, String type, boolean alone, String panel, JsonObject values) {
             this.json = json;
-            this.bytes = Json.utf8Length(json);
+            this.bytes = bytes;
             this.label = label;
             this.type = type;
             this.alone = alone;
+            this.panel = panel;
+            this.need = needOf(type);
+            if (values != null && !alone && "values.set".equals(type)) {
+                set = new LinkedHashMap<String, JsonElement>();
+                del = new LinkedHashSet<String>();
+                JsonElement s = values.get("set");
+                if (s != null && s.isJsonObject()) for (Map.Entry<String, JsonElement> e : s.getAsJsonObject().entrySet()) set.put(e.getKey(), e.getValue());
+                JsonElement d = values.get("del");
+                if (d != null && d.isJsonArray()) for (JsonElement k : d.getAsJsonArray()) del.add(k.getAsString());
+            } else {
+                set = null;
+                del = null;
+            }
+        }
+
+        void merge(Item next) {
+            for (Map.Entry<String, JsonElement> e : next.set.entrySet()) {
+                set.put(e.getKey(), e.getValue());
+                del.remove(e.getKey());
+            }
+            for (String k : next.del) {
+                set.remove(k);
+                del.remove(k);
+                del.add(k);
+            }
+            json = null;
+        }
+
+        void ensureJson() {
+            if (json != null) return;
+            JsonObject o = Json.envelope("values.set");
+            if (!set.isEmpty()) {
+                JsonObject s = new JsonObject();
+                for (Map.Entry<String, JsonElement> e : set.entrySet()) s.add(e.getKey(), e.getValue());
+                o.add("set", s);
+            }
+            if (!del.isEmpty()) {
+                JsonArray d = new JsonArray();
+                for (String k : del) d.add(new JsonPrimitive(k));
+                o.add("del", d);
+            }
+            json = Json.write(o);
+            bytes = Json.utf8Length(json);
         }
     }
 
@@ -50,12 +105,10 @@ final class Outbox {
         final int part;
         final long seq;
         final int[] need;
+        final int msgs;
+        final List<String> panels;
 
-        Frame(String json, int cost, boolean lock, long seq, int[] need) {
-            this(json, cost, lock, null, 0, seq, need);
-        }
-
-        Frame(String json, int cost, boolean lock, String cid, int part, long seq, int[] need) {
+        Frame(String json, int cost, boolean lock, String cid, int part, long seq, int[] need, int msgs, List<String> panels) {
             this.data = json.getBytes(Json.UTF_8);
             this.cost = cost;
             this.lock = lock;
@@ -63,16 +116,16 @@ final class Outbox {
             this.part = part;
             this.seq = seq;
             this.need = need;
+            this.msgs = msgs;
+            this.panels = panels;
         }
     }
 
-    static int[] need(List<Item> items) {
+    static int[] needOf(String type) {
         int[] need = new int[3];
-        for (Item item : items) {
-            if ("panel.set".equals(item.type) || "panel.patch".equals(item.type)) need[PANELS]++;
-            else if ("values.set".equals(item.type)) need[VALUES]++;
-            else if ("toast".equals(item.type)) need[TOASTS]++;
-        }
+        if ("panel.set".equals(type) || "panel.patch".equals(type)) need[PANELS]++;
+        else if ("values.set".equals(type)) need[VALUES]++;
+        else if ("toast".equals(type)) need[TOASTS]++;
         return need;
     }
 
@@ -87,6 +140,7 @@ final class Outbox {
     private final ArrayDeque<Frame> frames = new ArrayDeque<Frame>();
     private final ArrayDeque<Frame> lockFrames = new ArrayDeque<Frame>();
     private long frameSeq;
+    private int waiting;
     private final Bucket all = new Bucket(RATE_PER_SECOND, RATE_BURST);
     private final Bucket locks = new Bucket(Limits.LOCKS_PER_SECOND * 0.8, 1);
     private final Bucket[] types = {new Bucket(16, TYPE_BURST[PANELS]), new Bucket(16, TYPE_BURST[VALUES]), new Bucket(0.8, TYPE_BURST[TOASTS])};
@@ -108,43 +162,41 @@ final class Outbox {
 
     void add(Item item) {
         Item last = queue.isEmpty() ? null : queue.get(queue.size() - 1);
-        if (last != null && "values.set".equals(item.type) && "values.set".equals(last.type) && !item.alone && !last.alone) {
-            queue.set(queue.size() - 1, new Item(mergeValues(last.json, item.json), item.label, item.type));
+        if (last != null && last.set != null && item.set != null) {
+            last.merge(item);
             return;
         }
         queue.add(item);
+        waiting++;
     }
 
     @SuppressWarnings("deprecation")
     static String mergeValues(String first, String second) {
-        JsonObject base = new JsonParser().parse(first).getAsJsonObject();
-        JsonObject next = new JsonParser().parse(second).getAsJsonObject();
-        JsonObject set = base.has("set") ? base.getAsJsonObject("set") : new JsonObject();
-        JsonArray del = base.has("del") ? base.getAsJsonArray("del") : new JsonArray();
-        if (next.has("set")) {
-            for (Map.Entry<String, JsonElement> e : next.getAsJsonObject("set").entrySet()) {
-                set.add(e.getKey(), e.getValue());
-                del = without(del, e.getKey());
-            }
-        }
-        if (next.has("del")) {
-            for (JsonElement k : next.getAsJsonArray("del")) {
-                set.remove(k.getAsString());
-                del = without(del, k.getAsString());
-                del.add(k);
-            }
-        }
-        base.remove("set");
-        base.remove("del");
-        if (set.entrySet().size() > 0) base.add("set", set);
-        if (del.size() > 0) base.add("del", del);
-        return Json.write(base);
+        Item a = new Item(first, 0, "values.set", "values.set", false, null, new JsonParser().parse(first).getAsJsonObject());
+        Item b = new Item(second, 0, "values.set", "values.set", false, null, new JsonParser().parse(second).getAsJsonObject());
+        a.merge(b);
+        a.ensureJson();
+        return a.json;
     }
 
-    private static JsonArray without(JsonArray list, String key) {
-        JsonArray out = new JsonArray();
-        for (JsonElement k : list) if (!key.equals(k.getAsString())) out.add(k);
-        return out;
+    int waiting() {
+        return waiting;
+    }
+
+    Set<String> clearQueued() {
+        Set<String> dropped = new HashSet<String>();
+        Iterator<Item> it = queue.iterator();
+        while (it.hasNext()) {
+            Item item = it.next();
+            if (item.type.equals("mods.lock") || item.type.equals("mods.unlock")) continue;
+            if (item.panel != null) dropped.add(item.panel);
+            it.remove();
+        }
+        for (Frame f : frames) dropped.addAll(f.panels);
+        frames.clear();
+        pendingOpen = null;
+        waiting = queue.size() + lockFrames.size();
+        return dropped;
     }
 
     void open(Item item) {
@@ -167,13 +219,6 @@ final class Outbox {
         lastPlayerClose = now;
     }
 
-    void dropPartialChunkSet() {
-        Frame head = frames.peek();
-        if (head == null || head.cid == null || head.part == 0) return;
-        java.util.Iterator<Frame> it = frames.iterator();
-        while (it.hasNext()) if (head.cid.equals(it.next().cid)) it.remove();
-    }
-
     boolean idle() {
         return queue.isEmpty() && frames.isEmpty() && lockFrames.isEmpty() && pendingOpen == null;
     }
@@ -187,7 +232,7 @@ final class Outbox {
     }
 
     static int batchOverhead(String rid) {
-        return Json.utf8Length(batchPrefix(rid)) + 2;
+        return BATCH_OVERHEAD + rid.length();
     }
 
     static String batchPrefix(String rid) {
@@ -205,21 +250,25 @@ final class Outbox {
 
     List<byte[]> drain(long now, int cap) {
         pack(cap);
-        List<byte[]> out = new ArrayList<byte[]>();
+        List<byte[]> out = null;
         while (true) {
             Frame m = frames.peek();
             Frame l = lockFrames.peek();
             if (l != null && (m == null || l.seq < m.seq) && all.has(1, now) && locks.has(1, now)) {
                 all.take(1, now);
                 locks.take(1, now);
+                if (out == null) out = new ArrayList<byte[]>();
                 out.add(l.data);
                 lockFrames.poll();
+                waiting -= l.msgs;
             } else if (m != null && (l == null || m.seq < l.seq || !locks.has(1, now)) && all.has(m.cost, now) && typesHave(m.need, now)) {
                 all.take(m.cost, now);
                 for (int k = 0; k < types.length; k++) types[k].take(m.need[k], now);
                 toastsPerMinute.take(m.need[TOASTS], now);
+                if (out == null) out = new ArrayList<byte[]>();
                 out.add(m.data);
                 frames.poll();
+                waiting -= m.msgs;
             } else {
                 break;
             }
@@ -227,13 +276,14 @@ final class Outbox {
         if (frames.isEmpty() && pendingOpen != null) {
             long allowed = Math.max(lastOpen + Limits.OPEN_INTERVAL_MS, lastPlayerClose + Limits.OPEN_AFTER_CLOSE_MS) + OPEN_MARGIN_MS;
             if (now >= allowed && all.take(1, now)) {
+                if (out == null) out = new ArrayList<byte[]>();
                 out.add(pendingOpen.json.getBytes(Json.UTF_8));
                 refs.put(pendingOpen.type, pendingOpen.label);
                 lastOpen = now;
                 pendingOpen = null;
             }
         }
-        return out;
+        return out == null ? Collections.<byte[]>emptyList() : out;
     }
 
     private boolean typesHave(int[] need, long now) {
@@ -246,43 +296,57 @@ final class Outbox {
     private void pack(int cap) {
         if (queue.isEmpty()) return;
         List<Item> group = new ArrayList<Item>();
+        int[] groupNeed = new int[3];
         int groupBytes = 0;
         for (Item item : queue) {
+            if (item.set != null) item.ensureJson();
             if (item.type.equals("mods.lock") || item.type.equals("mods.unlock")) {
-                groupBytes = flushGroup(group, groupBytes);
+                groupBytes = flushGroup(group, groupNeed);
                 String rid = "l" + (++lockSeq);
                 refs.put(rid, item.label);
                 refs.put(item.type, item.label);
-                lockFrames.add(new Frame(withRid(item.json, rid), 1, true, ++frameSeq, new int[3]));
+                lockFrames.add(new Frame(withRid(item.json, rid), 1, true, null, 0, ++frameSeq, new int[3], 1, Collections.<String>emptyList()));
                 continue;
             }
-            if (item.alone) groupBytes = flushGroup(group, groupBytes);
+            if (item.alone) groupBytes = flushGroup(group, groupNeed);
             String nextRid = "b" + (batchSeq + 1);
-            if (!group.isEmpty() && (group.size() >= Limits.BATCH_MESSAGES || over(need(group), need(Collections.singletonList(item)))
+            if (!group.isEmpty() && (group.size() >= Limits.BATCH_MESSAGES || over(groupNeed, item.need)
                     || batchOverhead(nextRid) + groupBytes + group.size() + item.bytes > cap)) {
-                groupBytes = flushGroup(group, groupBytes);
+                groupBytes = flushGroup(group, groupNeed);
                 nextRid = "b" + (batchSeq + 1);
             }
             if (batchOverhead(nextRid) + item.bytes > cap) {
-                groupBytes = flushGroup(group, groupBytes);
+                groupBytes = flushGroup(group, groupNeed);
                 chunk(item, cap);
                 continue;
             }
             group.add(item);
             groupBytes += item.bytes;
-            if (item.alone) groupBytes = flushGroup(group, groupBytes);
+            for (int k = 0; k < groupNeed.length; k++) groupNeed[k] += item.need[k];
+            if (item.alone) groupBytes = flushGroup(group, groupNeed);
         }
-        flushGroup(group, groupBytes);
+        flushGroup(group, groupNeed);
         queue.clear();
     }
 
-    private int flushGroup(List<Item> group, int groupBytes) {
+    private int flushGroup(List<Item> group, int[] groupNeed) {
         if (group.isEmpty()) return 0;
         String rid = "b" + (++batchSeq);
-        frames.add(new Frame(batchText(rid, group), 1, false, ++frameSeq, need(group)));
+        frames.add(new Frame(batchText(rid, group), 1, false, null, 0, ++frameSeq, groupNeed.clone(), group.size(), panels(group)));
         refs.put(rid, describe(group));
         group.clear();
+        Arrays.fill(groupNeed, 0);
         return 0;
+    }
+
+    private static List<String> panels(List<Item> group) {
+        List<String> out = null;
+        for (Item item : group) {
+            if (item.panel == null) continue;
+            if (out == null) out = new ArrayList<String>();
+            out.add(item.panel);
+        }
+        return out == null ? Collections.<String>emptyList() : out;
     }
 
     private void chunk(Item item, int cap) {
@@ -297,11 +361,12 @@ final class Outbox {
         }
         refs.put(rid, describe(one));
         refs.put(cid, describe(one) + " (chunked in " + parts.size() + " parts)");
+        List<String> panels = panels(one);
         for (int i = 0; i < parts.size(); i++) {
             String json = Json.write(Chunker.message(cid, i, parts.size(), parts.get(i)));
             if (Json.utf8Length(json) > cap) throw new IllegalStateException("chunk " + cid + " part " + i + " is over " + cap + " bytes");
             boolean last = i == parts.size() - 1;
-            frames.add(new Frame(json, last ? 2 : 1, false, cid, i, ++frameSeq, last ? need(one) : new int[3]));
+            frames.add(new Frame(json, last ? 2 : 1, false, cid, i, ++frameSeq, last ? item.need.clone() : new int[3], last ? 1 : 0, panels));
         }
     }
 

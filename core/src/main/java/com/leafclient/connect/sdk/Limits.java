@@ -8,7 +8,7 @@ public final class Limits {
 
     /** Largest plugin message the SDK sends, in bytes. */
     public static final int SERVER_MESSAGE_BYTES = 64 * 1024;
-    /** Plugin message size the Bukkit adapter uses when the server's plugin message limit is 32766 bytes or less, or unknown. */
+    /** Plugin message size the Paper adapter uses when the server's plugin message limit is 32766 bytes or less, or unknown. */
     public static final int LEGACY_MESSAGE_BYTES = 30000;
     /** Largest message the client accepts after it joins the chunks of a message split into parts, in bytes. */
     public static final int CHUNKED_MESSAGE_BYTES = 512 * 1024;

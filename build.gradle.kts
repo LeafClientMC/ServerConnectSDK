@@ -2,7 +2,7 @@ subprojects {
     apply(plugin = "java-library")
 
     group = "com.leafclient.connect"
-    version = "0.1.1"
+    version = "0.2.0"
 
     repositories {
         mavenCentral()
@@ -29,7 +29,7 @@ subprojects {
     }
 }
 
-configure(listOf(project(":core"), project(":bukkit"), project(":velocity"), project(":bungee"))) {
+configure(listOf(project(":core"), project(":paper"), project(":velocity"), project(":bungee"))) {
     apply(plugin = "maven-publish")
     extensions.configure<PublishingExtension> {
         publications.create<MavenPublication>("maven") {
@@ -38,12 +38,22 @@ configure(listOf(project(":core"), project(":bukkit"), project(":velocity"), pro
     }
 }
 
-project(":bukkit") {
-    description = "Leaf Server Connect SDK for Bukkit, Spigot, Paper and Purpur 1.8.8 to 26.x"
+project(":paper") {
+    description = "Leaf Server Connect SDK for Paper, Folia, Spigot, Bukkit and Purpur 1.8.8 to 26.x"
     dependencies {
         "api"(project(":core"))
         "compileOnly"("org.bukkit:bukkit:1.8.8-R0.1-SNAPSHOT")
         "compileOnly"("com.google.code.gson:gson:2.2.4")
+        "testImplementation"("org.bukkit:bukkit:1.8.8-R0.1-SNAPSHOT")
+        "testImplementation"(platform("org.junit:junit-bom:5.10.2"))
+        "testImplementation"("org.junit.jupiter:junit-jupiter")
+        "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
+    }
+    tasks.named<JavaCompile>("compileTestJava") {
+        options.compilerArgs.remove("-Werror")
+    }
+    tasks.withType<Test>().configureEach {
+        useJUnitPlatform()
     }
 }
 
@@ -67,9 +77,9 @@ project(":bungee") {
 }
 
 project(":example") {
-    description = "Leaf Server Connect example plugin for Bukkit"
+    description = "Leaf Server Connect example plugin for Paper, Folia, Spigot and Bukkit"
     dependencies {
-        "implementation"(project(":bukkit"))
+        "implementation"(project(":paper"))
         "compileOnly"("org.bukkit:bukkit:1.8.8-R0.1-SNAPSHOT")
         "compileOnly"("com.google.code.gson:gson:2.2.4")
     }

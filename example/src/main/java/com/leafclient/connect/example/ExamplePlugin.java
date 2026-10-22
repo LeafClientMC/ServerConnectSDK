@@ -12,32 +12,33 @@ import com.leafclient.connect.sdk.Place;
 import com.leafclient.connect.sdk.Session;
 import com.leafclient.connect.sdk.Toast;
 import com.leafclient.connect.sdk.Ui;
-import com.leafclient.connect.sdk.bukkit.BukkitConnect;
+import com.leafclient.connect.sdk.paper.PaperConnect;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Example Bukkit plugin for the Leaf Server Connect SDK. When a Leaf Client player is ready it sends a menu with a
- * shop, a leaderboard and a sign up form, a coins value, and a block panel at the world spawn.
+ * Example Paper plugin for the Leaf Server Connect SDK. It also runs on Folia, Spigot and Bukkit. When a Leaf Client
+ * player is ready it sends a menu with a shop, a leaderboard and a sign up form, a coins value, and a block panel at
+ * the world spawn. The coins map is concurrent because on Folia each player's handlers run on their own region thread.
  */
 public final class ExamplePlugin extends JavaPlugin {
 
-    private final Map<UUID, Integer> coins = new HashMap<>();
-    private BukkitConnect connect;
+    private final Map<UUID, Integer> coins = new ConcurrentHashMap<>();
+    private PaperConnect connect;
 
     /**
      * Starts the SDK and sends the UI to each player whose client says hello.
      */
     @Override
     public void onEnable() {
-        connect = BukkitConnect.enable(this);
+        connect = PaperConnect.enable(this);
         connect.onReady(this::sendUi);
     }
 

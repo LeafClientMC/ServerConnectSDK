@@ -41,6 +41,16 @@ public interface ConnectLog {
     }
 
     /**
+     * Tells whether debug lines are written. The SDK skips building debug lines when this is false. The default is
+     * true.
+     *
+     * @return true when {@link #debug(String)} writes anything
+     */
+    default boolean debugEnabled() {
+        return true;
+    }
+
+    /**
      * Wraps a {@code java.util.logging} logger. Debug lines go to {@link Level#FINE} and errors to {@link Level#SEVERE}.
      *
      * @param logger the logger
@@ -61,6 +71,11 @@ public interface ConnectLog {
             @Override
             public void debug(String message) {
                 logger.log(Level.FINE, message);
+            }
+
+            @Override
+            public boolean debugEnabled() {
+                return logger.isLoggable(Level.FINE);
             }
 
             @Override
@@ -87,6 +102,11 @@ public interface ConnectLog {
 
             @Override
             public void debug(String message) {
+            }
+
+            @Override
+            public boolean debugEnabled() {
+                return false;
             }
         };
     }

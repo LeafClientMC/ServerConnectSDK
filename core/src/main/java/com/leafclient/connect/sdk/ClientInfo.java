@@ -150,9 +150,8 @@ public final class ClientInfo {
     }
 
     private static int integer(JsonObject o, String key, int fallback) {
-        JsonElement e = o.get(key);
-        if (e == null || !e.isJsonPrimitive() || !e.getAsJsonPrimitive().isNumber()) return fallback;
-        return e.getAsInt();
+        Long v = Json.integer(o.get(key));
+        return v == null || v < Integer.MIN_VALUE || v > Integer.MAX_VALUE ? fallback : v.intValue();
     }
 
     private static List<String> strings(JsonObject o, String key) {

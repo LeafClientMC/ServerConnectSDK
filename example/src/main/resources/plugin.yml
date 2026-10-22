@@ -1,5 +1,6 @@
 name: LeafConnectExample
-version: 0.1.1
+version: 0.2.0
 main: com.leafclient.connect.example.ExamplePlugin
 api-version: '1.13'
+folia-supported: true
 description: Leaf Server Connect SDK example with a shop, a leaderboard, a form and a world panel

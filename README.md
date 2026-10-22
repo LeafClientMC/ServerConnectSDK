@@ -6,11 +6,11 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-a2f07b?style=flat-square&labelColor=111716" alt="License: MIT"></a>
-  <a href="https://github.com/LeafClientMC/ServerConnectSDK/releases/tag/v0.1.1"><img src="https://img.shields.io/github/v/tag/LeafClientMC/ServerConnectSDK?label=release&color=a2f07b&style=flat-square&labelColor=111716" alt="Release"></a>
+  <a href="https://github.com/LeafClientMC/ServerConnectSDK/releases/tag/v0.2.0"><img src="https://img.shields.io/github/v/tag/LeafClientMC/ServerConnectSDK?label=release&color=a2f07b&style=flat-square&labelColor=111716" alt="Release"></a>
   <a href="https://jitpack.io/#LeafClientMC/ServerConnectSDK"><img src="https://jitpack.io/v/LeafClientMC/ServerConnectSDK.svg" alt="JitPack"></a>
   <img src="https://img.shields.io/badge/Java-8%2B-a2f07b?style=flat-square&labelColor=111716" alt="Java 8+">
   <br>
-  <img src="https://img.shields.io/badge/Paper%20%2F%20Spigot%20%2F%20Bukkit-1.8.8%20to%2026.x-86d65f?style=flat-square&labelColor=111716" alt="Paper, Spigot, Bukkit 1.8.8 to 26.x">
+  <img src="https://img.shields.io/badge/Paper%20(also%20Spigot%2C%20Bukkit%2C%20Folia)-1.8.8%20to%2026.x-86d65f?style=flat-square&labelColor=111716" alt="Paper (also Spigot, Bukkit, Folia) 1.8.8 to 26.x">
   <img src="https://img.shields.io/badge/Velocity-86d65f?style=flat-square&labelColor=111716" alt="Velocity">
   <img src="https://img.shields.io/badge/BungeeCord%20%2F%20Waterfall-86d65f?style=flat-square&labelColor=111716" alt="BungeeCord, Waterfall">
   <a href="https://discord.gg/wvYqKpUNdb"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white&style=flat-square&labelColor=111716" alt="Discord"></a>
@@ -55,9 +55,9 @@ This SDK is the Java side. It builds the JSON for you, checks it against the cli
 - **Toasts and waypoints.** Leaf notifications with up to 2 buttons, and server waypoints.
 - **Mod locks.** `Session.lockMods` turns off chosen client mods on your server and shows the player why.
 - **Checked before sending.** A value that breaks a client limit throws `InvalidUiException` with the field path, so the client never receives UI it would reject.
-- **Checked clicks.** Your handler runs only for clicks that pass the SDK checks: known panel, matching token, enabled button, cooldown, valid inputs and, on Bukkit, reach for world panels.
+- **Checked clicks.** Your handler runs only for clicks that pass the SDK checks: known panel, matching token, enabled button, cooldown, valid inputs and, on Paper, reach for world panels.
 - **Batching.** Messages queued in the same tick go out in one frame, large messages are split into chunks, and sending stays within the client rate limits. Sessions are thread safe.
-- **Old and new servers.** The core and Bukkit modules target Java 8 and run with the Gson 2.2.4 that Spigot 1.8.8 ships. Behind a proxy, `onReady` runs again after every backend switch.
+- **Old and new servers.** The core and paper modules target Java 8 and run with the Gson 2.2.4 that Spigot 1.8.8 ships. On Folia, each player's messages are sent from that player's own region thread. Behind a proxy, `onReady` runs again after every backend switch.
 
 ## Visual editor
 
@@ -100,7 +100,7 @@ The full guide is on the Leaf website: <https://leafclient.com/docs/#server-conn
 | Module | Package | For | Java |
 | --- | --- | --- | --- |
 | `core` | `com.leafclient.connect.sdk` | Builders, sessions, batching and click checks | 8+ |
-| `bukkit` | `com.leafclient.connect.sdk.bukkit` | Paper, Spigot, Bukkit and Purpur, 1.8.8 to 26.x | 8+ |
+| `paper` | `com.leafclient.connect.sdk.paper` | Paper (also Spigot, Bukkit, Purpur and Folia), 1.8.8 to 26.x | 8+ |
 | `velocity` | `com.leafclient.connect.sdk.velocity` | Velocity proxies | 17+ |
 | `bungee` | `com.leafclient.connect.sdk.bungee` | BungeeCord and Waterfall proxies | 8+ |
 
@@ -108,7 +108,10 @@ Each platform module includes `core`. Shade the one you need into your plugin ja
 
 ### Install
 
-The SDK is on [JitPack](https://jitpack.io/#LeafClientMC/ServerConnectSDK). The examples add `bukkit`. For a proxy plugin, use `velocity` or `bungee` instead.
+The SDK is on [JitPack](https://jitpack.io/#LeafClientMC/ServerConnectSDK). The examples add `paper`. For a proxy plugin, use `velocity` or `bungee` instead.
+
+> [!NOTE]
+> 0.2.0 renames the `bukkit` module to `paper`. When you update from 0.1.x, change the artifact from `bukkit` to `paper`, the import from `com.leafclient.connect.sdk.bukkit.BukkitConnect` to `com.leafclient.connect.sdk.paper.PaperConnect`, and `BukkitConnect` to `PaperConnect` in your code. The module still runs on Spigot and Bukkit, and now on Folia too.
 
 **Gradle** (`build.gradle.kts`), then build with `./gradlew shadowJar`:
 
@@ -124,7 +127,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.LeafClientMC.ServerConnectSDK:bukkit:v0.1.1")
+    implementation("com.github.LeafClientMC.ServerConnectSDK:paper:v0.2.0")
 }
 ```
 
@@ -141,8 +144,8 @@ dependencies {
 <dependencies>
     <dependency>
         <groupId>com.github.LeafClientMC.ServerConnectSDK</groupId>
-        <artifactId>bukkit</artifactId>
-        <version>v0.1.1</version>
+        <artifactId>paper</artifactId>
+        <version>v0.2.0</version>
     </dependency>
 </dependencies>
 
@@ -163,7 +166,7 @@ dependencies {
 </build>
 ```
 
-### Paper, Spigot and Bukkit
+### Paper (also Spigot, Bukkit, Folia)
 
 ```java
 package com.example.shop;
@@ -176,15 +179,15 @@ import com.leafclient.connect.sdk.Place;
 import com.leafclient.connect.sdk.Session;
 import com.leafclient.connect.sdk.Toast;
 import com.leafclient.connect.sdk.Ui;
-import com.leafclient.connect.sdk.bukkit.BukkitConnect;
+import com.leafclient.connect.sdk.paper.PaperConnect;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class ShopPlugin extends JavaPlugin {
-    private BukkitConnect connect;
+    private PaperConnect connect;
 
     @Override
     public void onEnable() {
-        connect = BukkitConnect.enable(this);
+        connect = PaperConnect.enable(this);
         connect.onReady(this::sendUi);
     }
 
@@ -210,7 +213,9 @@ public final class ShopPlugin extends JavaPlugin {
 }
 ```
 
-`onReady` runs when a Leaf client says hello. Everything sent in the same tick goes out in one batch. Listeners and click handlers run on the main server thread, so you can call the Bukkit API in them.
+`onReady` runs when a Leaf client says hello. Everything sent in the same tick goes out in one batch. On Paper, Spigot and Bukkit, listeners and click handlers run on the main server thread, so you can call the Bukkit API in them.
+
+**Folia.** Add `folia-supported: true` to your `plugin.yml`. `PaperConnect` detects Folia by itself and sends each player's messages from that player's own region thread, so the SDK calls stay the same. Listeners and click handlers run on the region thread of the player who sent the message. Use Folia's schedulers before you change blocks, entities or players in other regions, and keep shared plugin data in thread safe collections.
 
 ### Velocity
 
@@ -297,7 +302,7 @@ On both proxies, buttons whose only actions are commands send no click to the se
 
 ### Example plugin
 
-[`example/`](example) is a complete Bukkit plugin: a menu with a shop, a leaderboard and a sign up form, a coins value, and a panel at the world spawn. It is the plugin in the in-game screenshot above.
+[`example/`](example) is a complete Paper plugin that also runs on Folia, Spigot and Bukkit: a menu with a shop, a leaderboard and a sign up form, a coins value, and a panel at the world spawn. It is the plugin in the in-game screenshot above.
 
 ## License
 

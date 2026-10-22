@@ -16,7 +16,7 @@ import java.util.function.LongSupplier;
 
 /**
  * The entry point of the SDK: keeps one {@link Session} per Leaf Client player, reads the messages they send and fires
- * the listeners. The platform adapters ({@code BukkitConnect}, {@code VelocityConnect}, {@code BungeeConnect}) extend
+ * the listeners. The platform adapters ({@code PaperConnect}, {@code VelocityConnect}, {@code BungeeConnect}) extend
  * it, register the plugin channel and call {@link #flush()} on a timer. A custom platform calls
  * {@link #receive}, {@link #disconnect(UUID)} and {@link #flush()} itself. A listener or click handler that throws is
  * logged and does not stop the others.
@@ -40,6 +40,8 @@ public class LeafConnect {
     private final List<Consumer<Closed>> closedListeners = new CopyOnWriteArrayList<Consumer<Closed>>();
     private final List<Consumer<ClientError>> errorListeners = new CopyOnWriteArrayList<Consumer<ClientError>>();
     private final List<Consumer<Rejection>> rejectionListeners = new CopyOnWriteArrayList<Consumer<Rejection>>();
+    private final ConcurrentHashMap<UUID, Bucket> hellos = new ConcurrentHashMap<UUID, Bucket>();
+    private final Throttle warnings = new Throttle(0.2, 5);
     private volatile boolean logClientErrors = true;
 
     /**
@@ -213,8 +215,10 @@ public class LeafConnect {
     /**
      * Handles one plugin message from a player on {@link #CHANNEL}. A {@code hello} creates or refreshes the session;
      * other messages from players without a session are ignored. Empty messages, messages over
-     * {@link #CLIENT_MESSAGE_BYTES} and messages that are not a JSON object are ignored. Listeners and click handlers
-     * run on the calling thread.
+     * {@link #CLIENT_MESSAGE_BYTES}, messages nested deeper than 64 levels and messages that are not a JSON object are
+     * ignored. A client may say hello 4 times in a row, then once every 2 seconds; more hellos are ignored. Warnings
+     * caused by a client, such as its error reports, are cut to one line of at most 512 characters and logged at most
+     * once every 5 seconds per player. Listeners and click handlers run on the calling thread.
      *
      * @param playerId the player UUID
      * @param playerName the player name, used in log lines
@@ -222,19 +226,31 @@ public class LeafConnect {
      * @param data the message bytes
      * @param transport sends frames back to this player
      */
-    @SuppressWarnings("deprecation")
     public void receive(UUID playerId, String playerName, Object player, byte[] data, Transport transport) {
         if (data == null || data.length == 0 || data.length > CLIENT_MESSAGE_BYTES) {
-            log.debug("ignored a " + (data == null ? 0 : data.length) + " byte message from " + playerName);
+            if (log.debugEnabled()) log.debug("ignored a " + (data == null ? 0 : data.length) + " byte message from " + playerName);
             return;
         }
+        try {
+            handle(playerId, playerName, player, data, transport);
+        } catch (RuntimeException e) {
+            Session s = sessions.get(playerId);
+            String line = (s != null ? s.warnings : warnings).admit("could not handle a Server Connect message from " + playerName + ": "
+                    + Json.clean(e.toString(), 512), now());
+            if (line != null) log.warn(line);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void handle(UUID playerId, String playerName, Object player, byte[] data, Transport transport) {
         JsonObject msg;
         try {
+            if (Json.tooDeep(data, 64)) throw new IllegalArgumentException("too deep");
             JsonElement e = new JsonParser().parse(new String(data, Json.UTF_8));
             if (!e.isJsonObject()) throw new IllegalArgumentException("not an object");
             msg = e.getAsJsonObject();
         } catch (RuntimeException e) {
-            log.debug("ignored a message from " + playerName + " that is not a JSON object");
+            if (log.debugEnabled()) log.debug("ignored a message from " + playerName + " that is not a JSON object");
             return;
         }
         String type = Json.getString(msg, "t");
@@ -245,7 +261,7 @@ public class LeafConnect {
         }
         Session s = sessions.get(playerId);
         if (s == null) {
-            log.debug("ignored " + type + " from " + playerName + " before hello");
+            if (log.debugEnabled()) log.debug("ignored " + Json.clean(type, 64) + " from " + playerName + " before hello");
             return;
         }
         if ("click".equals(type)) {
@@ -258,12 +274,16 @@ public class LeafConnect {
             s.updatePrefs(Prefs.parse(msg));
             fire(prefsListeners, s, "prefs");
         } else if ("error".equals(type)) {
-            String ref = Json.getString(msg, "ref");
-            ClientError error = new ClientError(s, String.valueOf(Json.getString(msg, "code")), ref, Json.getString(msg, "detail"), s.describeRef(ref));
-            if (logClientErrors) log.warn(error.toString());
+            String ref = Json.clean(Json.getString(msg, "ref"), 64);
+            ClientError error = new ClientError(s, String.valueOf(Json.clean(Json.getString(msg, "code"), 64)), ref,
+                    Json.clean(Json.getString(msg, "detail"), 512), s.describeRef(ref));
+            if (logClientErrors) {
+                String line = s.warnings.admit(error.toString(), now());
+                if (line != null) log.warn(line);
+            }
             fire(errorListeners, error, "error");
-        } else {
-            log.debug("ignored " + type + " from " + playerName);
+        } else if (log.debugEnabled()) {
+            log.debug("ignored " + Json.clean(type, 64) + " from " + playerName);
         }
     }
 
@@ -273,6 +293,11 @@ public class LeafConnect {
      * @param playerId the player UUID
      */
     public void disconnect(UUID playerId) {
+        hellos.remove(playerId);
+        endSession(playerId);
+    }
+
+    private void endSession(UUID playerId) {
         Session s;
         synchronized (sessions) {
             s = sessions.remove(playerId);
@@ -306,10 +331,21 @@ public class LeafConnect {
         ClientInfo info = ClientInfo.parse(msg);
         JsonElement prefsJson = msg.get("prefs");
         Prefs prefs = Prefs.parse(prefsJson != null && prefsJson.isJsonObject() ? prefsJson.getAsJsonObject() : null);
+        Bucket rate = hellos.get(playerId);
+        if (rate == null) {
+            Bucket fresh = new Bucket(0.5, 4);
+            rate = hellos.putIfAbsent(playerId, fresh);
+            if (rate == null) rate = fresh;
+        }
+        if (!rate.take(1, now())) {
+            if (log.debugEnabled()) log.debug("ignored a hello from " + playerName + ": too many hellos");
+            return;
+        }
         if (!info.speaks(PROTOCOL)) {
-            log.warn(playerName + " uses Leaf Server Connect protocol " + info.protocolMin() + " to " + info.protocolMax()
-                    + ", this plugin speaks " + PROTOCOL + "; no UI is sent to them");
-            disconnect(playerId);
+            String line = warnings.admit(playerName + " uses Leaf Server Connect protocol " + info.protocolMin() + " to " + info.protocolMax()
+                    + ", this plugin speaks " + PROTOCOL + "; no UI is sent to them", now());
+            if (line != null) log.warn(line);
+            endSession(playerId);
             return;
         }
         Session s;
@@ -322,21 +358,21 @@ public class LeafConnect {
                 sessions.put(playerId, s);
             }
         }
-        log.debug("hello from " + playerName + ": " + info);
+        if (log.debugEnabled()) log.debug("hello from " + playerName + ": " + Json.clean(info.toString(), 512));
         fire(readyListeners, s, "ready");
     }
 
     private void click(Session s, JsonObject msg) {
         Session.Resolved r = s.resolveClick(msg, now());
         if (r.rejection != null) {
-            if (!r.unknown) log.debug(r.rejection.toString());
+            if (!r.unknown && log.debugEnabled()) log.debug(Json.clean(r.rejection.toString(), 512));
             fire(rejectionListeners, r.rejection, "rejected");
             return;
         }
         if (r.click.anchor() != null && !inReach(s, r.click.anchor())) {
             Rejection far = new Rejection(s, Rejection.Reason.OUT_OF_REACH, "player is too far from world panel " + r.click.panel(),
                     r.click.panel(), r.click.button(), r.click.seq());
-            log.debug(far.toString());
+            if (log.debugEnabled()) log.debug(Json.clean(far.toString(), 512));
             fire(rejectionListeners, far, "rejected");
             return;
         }

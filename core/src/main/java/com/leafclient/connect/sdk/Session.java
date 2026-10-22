@@ -21,6 +21,11 @@ import java.util.function.Consumer;
  * Messages are checked against the client limits when queued, then batched, split into chunks when too large, and sent
  * on {@link #flush()} within the client rate limits. The session records the panels, toasts, waypoints and values it
  * sent, so it can enforce the per player limits and check the clicks that come back. Methods are thread safe.
+ *
+ * <p>At most 512 messages wait to be sent per player, about 16 seconds of sending at the client rate limit. While
+ * that many wait, new messages are dropped: {@link #send(Message)} returns false, the other methods change nothing,
+ * and a warning is logged at most once every 5 seconds. A new {@code hello} from the client drops what was still
+ * waiting, except mod locks and unlocks, and the session forgets the panels whose messages were dropped.
  */
 public final class Session {
 
@@ -92,7 +97,9 @@ public final class Session {
     private final Map<String, WaypointRecord> waypoints = new LinkedHashMap<String, WaypointRecord>();
     private final Set<String> values = new HashSet<String>();
     private final Bucket clickRate = new Bucket(32, 32);
+    final Throttle warnings = new Throttle(0.2, 5);
     private long lastSeq;
+    private long nextExpire = Long.MIN_VALUE;
 
     Session(LeafConnect connect, UUID id, String name, Object player, Transport transport, ClientInfo client, Prefs prefs) {
         this.connect = connect;
@@ -177,17 +184,16 @@ public final class Session {
      * Checks and queues a message. A message that needs a cap the client did not list is skipped and logged at debug.
      *
      * @param message the message
-     * @return true if it was queued, false if the client lacks the cap
+     * @return true if it was queued, false if the client lacks the cap or 512 messages already wait to be sent
      * @throws InvalidUiException if the message breaks a client limit, including the per player limits
      */
     public synchronized boolean send(Message message) {
         String required = message.requiredCap();
         if (required != null && !client.has(required)) {
-            connect.log().debug("not sent to " + name + ": the client does not list " + required + " in its caps");
+            if (connect.log().debugEnabled()) connect.log().debug("not sent to " + name + ": the client does not list " + required + " in its caps");
             return false;
         }
-        enqueue(message.encode(this));
-        return true;
+        return enqueue(message.encode(this));
     }
 
     /**
@@ -577,7 +583,11 @@ public final class Session {
     }
 
     synchronized List<byte[]> drain(long now) {
-        expire(now);
+        if (now >= nextExpire) {
+            expire(now);
+            nextExpire = now + 1000;
+        }
+        if (outbox.idle()) return java.util.Collections.emptyList();
         return outbox.drain(now, cap);
     }
 
@@ -607,8 +617,7 @@ public final class Session {
         toasts.clear();
         waypoints.clear();
         values.clear();
-        outbox.cancelOpen();
-        outbox.dropPartialChunkSet();
+        for (String dropped : outbox.clearQueued()) panels.remove(dropped);
     }
 
     synchronized void updatePrefs(Prefs prefs) {
@@ -718,10 +727,11 @@ public final class Session {
         String data = Json.getString(m, "data");
         boolean confirmed = Json.getBool(m, "confirmed", false);
         JsonElement seqJson = m.get("seq");
-        if (src == null || panel == null || button == null || seqJson == null || !seqJson.isJsonPrimitive() || !seqJson.getAsJsonPrimitive().isNumber()) {
+        Long seqValue = Json.integer(seqJson);
+        if (src == null || panel == null || button == null || seqValue == null) {
             return reject(Rejection.Reason.MALFORMED, "missing src, panel, button or seq", panel, button, -1);
         }
-        long seq = seqJson.getAsLong();
+        long seq = seqValue;
         if (seq <= lastSeq) return reject(Rejection.Reason.REPLAY, "seq " + seq + " is not above " + lastSeq, panel, button, seq);
         lastSeq = seq;
         if (!clickRate.take(1, now)) return reject(Rejection.Reason.RATE, "more than 32 clicks per second", panel, button, seq);
@@ -862,29 +872,42 @@ public final class Session {
         return o.has("t") ? o.get("t").getAsString() : "message";
     }
 
-    private void enqueue(Outgoing out) {
-        enqueue(out, false);
+    private boolean enqueue(Outgoing out) {
+        return enqueue(out, false);
     }
 
-    private void enqueue(Outgoing out, boolean alone) {
+    private boolean enqueue(Outgoing out, boolean alone) {
         String json = check(out.json);
         int bytes = Json.utf8Length(json);
         if (out.isLock() && bytes > cap) throw Check.fail(out.label, "is " + bytes + " bytes, over the " + cap + " byte message limit");
         if (Outbox.fitsAlone(bytes, cap) == 0) {
-            int raw = Json.utf8Length(json) + Outbox.batchOverhead("b2147483647");
+            int raw = bytes + Outbox.batchOverhead("b2147483647");
             if (raw > Limits.CHUNKED_MESSAGE_BYTES) {
                 throw Check.fail(out.label, "is " + raw + " bytes, the client accepts at most " + Limits.CHUNKED_MESSAGE_BYTES + " even when chunked (CHUNKED_MESSAGE_BYTES)");
             }
             List<Outbox.Item> one = new ArrayList<Outbox.Item>();
-            one.add(new Outbox.Item(json, out.label, out.type));
+            one.add(new Outbox.Item(json, bytes, out.label, out.type, false, null, null));
             int parts = Outbox.chunkParts(Outbox.batchText("b2147483647", one), cap);
             if (parts > Limits.CHUNK_PARTS) {
                 throw Check.fail(out.label, "is " + bytes + " bytes and needs " + parts + " chunks of " + cap + " bytes on this server, the client accepts "
                         + Limits.CHUNK_PARTS + " (CHUNK_PARTS)");
             }
         }
+        if (outbox.waiting() >= Outbox.MAX_WAITING_MESSAGES) {
+            String line = warnings.admit(Outbox.MAX_WAITING_MESSAGES + " messages already wait to be sent to " + name + ", dropped " + out.label, now());
+            if (line != null) connect.log().warn(line);
+            return false;
+        }
         out.commit.run();
-        outbox.add(new Outbox.Item(json, out.label, out.type, alone));
+        outbox.add(new Outbox.Item(json, bytes, out.label, out.type, alone, panelId(out), out.json));
+        return true;
+    }
+
+    private static String panelId(Outgoing out) {
+        if ("panel.patch".equals(out.type)) return Json.getString(out.json, "id");
+        if (!"panel.set".equals(out.type)) return null;
+        JsonElement p = out.json.get("panel");
+        return p != null && p.isJsonObject() ? Json.getString(p.getAsJsonObject(), "id") : null;
     }
 
     private static boolean eq(String a, String b) {
