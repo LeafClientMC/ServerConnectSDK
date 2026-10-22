@@ -1,5 +1,8 @@
 package com.leafclient.connect.sdk;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 final class PanelRecord {
@@ -21,9 +24,8 @@ final class PanelRecord {
     Object world;
     String placeWorld;
     String placeDim;
-    private String oldToken;
-    private PanelRecord oldRecord;
-    private long oldTokenUntil;
+    private static final int OLD_TOKENS = 4;
+    private List<OldToken> oldTokens = Collections.emptyList();
 
     PanelRecord(String id, String token, Place<?> place, int[] size, String group, boolean connectionScope, long ttlMs, long now,
                 Map<String, Encoder.ButtonSpec> buttons, Map<String, Encoder.InputSpec> inputs, Map<String, String> elementTypes) {
@@ -49,17 +51,43 @@ final class PanelRecord {
         this.placeDim = a == null ? null : a.dim();
     }
 
-    void keepOldToken(String token, PanelRecord record, long until) {
-        record.oldToken = null;
-        record.oldRecord = null;
-        this.oldToken = token;
-        this.oldRecord = record;
-        this.oldTokenUntil = until;
+    void keepOldToken(String token, PanelRecord record, long until, long now) {
+        List<OldToken> kept = new ArrayList<OldToken>(OLD_TOKENS + 1);
+        for (OldToken t : record.oldTokens) if (now <= t.until) kept.add(t);
+        record.oldTokens = Collections.emptyList();
+        kept.add(new OldToken(token, record, until));
+        while (kept.size() > OLD_TOKENS) kept.remove(0);
+        this.oldTokens = kept;
     }
 
     PanelRecord oldTokenRecord(String token, long now) {
-        if (oldToken == null || now > oldTokenUntil || !oldToken.equals(token)) return null;
-        return oldRecord;
+        prune(now);
+        for (OldToken t : oldTokens) if (t.token.equals(token)) return t.record;
+        return null;
+    }
+
+    void prune(long now) {
+        if (oldTokens.isEmpty()) return;
+        List<OldToken> kept = null;
+        for (OldToken t : oldTokens) {
+            if (now > t.until) continue;
+            if (kept == null) kept = new ArrayList<OldToken>(oldTokens.size());
+            kept.add(t);
+        }
+        if (kept == null) oldTokens = Collections.emptyList();
+        else if (kept.size() != oldTokens.size()) oldTokens = kept;
+    }
+
+    private static final class OldToken {
+        final String token;
+        final PanelRecord record;
+        final long until;
+
+        OldToken(String token, PanelRecord record, long until) {
+            this.token = token;
+            this.record = record;
+            this.until = until;
+        }
     }
 
     boolean needsCurrentWorld() {
@@ -69,6 +97,7 @@ final class PanelRecord {
     void rearm(long ttlMs, long now) {
         this.ttlMs = ttlMs;
         this.expiresAt = ttlMs > 0 ? now + ttlMs : 0;
+        prune(now);
     }
 
     boolean world() {

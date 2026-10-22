@@ -72,9 +72,11 @@ public final class Patch extends Message {
                 || value instanceof JsonPrimitive && ((JsonPrimitive) value).isBoolean())) {
             throw Check.fail(at, "enabled is true, false or null");
         }
-        if ("cooldown_left".equals(field) && value != null) {
-            if (!(value instanceof Number)) throw Check.fail(at, "cooldown_left is a number of milliseconds or null");
-            Check.range(((Number) value).longValue(), 0, 3600000, at);
+        if ("cooldown_left".equals(field)) {
+            Number ms = value instanceof Number ? (Number) value
+                    : value instanceof JsonPrimitive && ((JsonPrimitive) value).isNumber() ? ((JsonPrimitive) value).getAsNumber() : null;
+            if (ms == null) throw Check.fail(at, "cooldown_left is a number of milliseconds; 0 clears the cooldown");
+            Check.range(ms.longValue(), 0, 3600000, at);
         }
         JsonElement json = toJson(checked, at);
         JsonObject fields = elements.get(elementId);
@@ -399,7 +401,7 @@ public final class Patch extends Message {
             @Override
             public void run() {
                 if (newToken != null && !newToken.equals(record.token)) {
-                    record.keepOldToken(record.token, record, now + Session.TOKEN_GRACE_MS);
+                    record.keepOldToken(record.token, record, now + Session.TOKEN_GRACE_MS, now);
                     record.token = newToken;
                 }
                 if (newSize != null) record.size = newSize.clone();
@@ -416,9 +418,8 @@ public final class Patch extends Message {
                     JsonElement cooldown = e.getValue().get("cooldown");
                     if (cooldown != null) b.cooldownMs = cooldownMs(cooldown);
                     JsonElement left = e.getValue().get("cooldown_left");
-                    if (left != null) {
-                        long ms = left.isJsonPrimitive() && left.getAsJsonPrimitive().isNumber() ? Math.max(0, Math.min(3600000, left.getAsLong())) : 0;
-                        session.setCooldownLeft(panelId, b.id, b.cooldownMs, ms, now);
+                    if (left != null && left.isJsonPrimitive() && left.getAsJsonPrimitive().isNumber()) {
+                        session.setCooldownLeft(panelId, b.id, b.cooldownMs, Math.max(0, Math.min(3600000, left.getAsLong())), now);
                     }
                 }
             }
