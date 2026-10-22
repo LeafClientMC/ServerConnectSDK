@@ -3,6 +3,7 @@ package com.leafclient.connect.sdk;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 final class Encoder {
@@ -13,13 +14,15 @@ final class Encoder {
         boolean enabled;
         long cooldownMs;
         final boolean onePressOneClick;
+        final Set<String> data;
 
-        ButtonSpec(String id, Consumer<Click> handler, boolean enabled, long cooldownMs, boolean onePressOneClick) {
+        ButtonSpec(String id, Consumer<Click> handler, boolean enabled, long cooldownMs, boolean onePressOneClick, Set<String> data) {
             this.id = id;
             this.handler = handler;
             this.enabled = enabled;
             this.cooldownMs = cooldownMs;
             this.onePressOneClick = onePressOneClick;
+            this.data = data;
         }
     }
 

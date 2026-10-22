@@ -1,6 +1,5 @@
 package com.leafclient.connect.sdk;
 
-import java.util.HashMap;
 import java.util.Map;
 
 final class PanelRecord {
@@ -19,7 +18,7 @@ final class PanelRecord {
     final Map<String, String> elementTypes;
     int[] size;
     WorldAnchor anchor;
-    final Map<String, Long> lastPress = new HashMap<String, Long>();
+    Object world;
 
     PanelRecord(String id, String token, Place<?> place, int[] size, String group, boolean connectionScope, long ttlMs, long now,
                 Map<String, Encoder.ButtonSpec> buttons, Map<String, Encoder.InputSpec> inputs, Map<String, String> elementTypes) {

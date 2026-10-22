@@ -62,9 +62,19 @@ project(":velocity") {
     dependencies {
         "api"(project(":core"))
         "compileOnly"("com.velocitypowered:velocity-api:3.4.0")
+        "testImplementation"("com.velocitypowered:velocity-api:3.4.0")
+        "testImplementation"(platform("org.junit:junit-bom:5.10.2"))
+        "testImplementation"("org.junit.jupiter:junit-jupiter")
+        "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
     }
     tasks.withType<JavaCompile>().configureEach {
         options.release.set(17)
+    }
+    tasks.named<JavaCompile>("compileTestJava") {
+        options.compilerArgs.remove("-Werror")
+    }
+    tasks.withType<Test>().configureEach {
+        useJUnitPlatform()
     }
 }
 
@@ -73,6 +83,19 @@ project(":bungee") {
     dependencies {
         "api"(project(":core"))
         "compileOnly"("net.md-5:bungeecord-api:1.21-R0.4")
+        "testImplementation"("net.md-5:bungeecord-api:1.21-R0.4")
+        "testImplementation"("org.mockito:mockito-core:5.14.2")
+        "testImplementation"(platform("org.junit:junit-bom:5.10.2"))
+        "testImplementation"("org.junit.jupiter:junit-jupiter")
+        "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
+    }
+    tasks.named<JavaCompile>("compileTestJava") {
+        options.compilerArgs.remove("-Werror")
+        options.release.set(17)
+    }
+    tasks.withType<Test>().configureEach {
+        useJUnitPlatform()
+        jvmArgs("-XX:+EnableDynamicAgentLoading", "-Xshare:off")
     }
 }
 

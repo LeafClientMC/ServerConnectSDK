@@ -1,6 +1,7 @@
 package com.leafclient.connect.sdk;
 
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
@@ -59,12 +60,25 @@ public final class Patch extends Message {
         if ("id".equals(field) || "type".equals(field) || "children".equals(field) || "child".equals(field)) {
             throw Check.fail("panel.patch.set." + elementId + "." + field, "id, type and children cannot be patched, send the panel again");
         }
+        String at = "panel.patch.set." + elementId + "." + field;
+        Object checked = value;
+        if (("label".equals(field) || "text".equals(field)) && value != null && !(value instanceof Text)
+                && !(value instanceof JsonNull)) {
+            if (value instanceof String) checked = Text.of((String) value);
+            else if (value instanceof JsonElement) checked = Text.json((JsonElement) value);
+            else throw Check.fail(at, "a " + field + " is a String, Text or JsonElement");
+        }
+        if ("enabled".equals(field) && !(value == null || value instanceof Boolean || value instanceof JsonNull
+                || value instanceof JsonPrimitive && ((JsonPrimitive) value).isBoolean())) {
+            throw Check.fail(at, "enabled is true, false or null");
+        }
+        JsonElement json = toJson(checked, at);
         JsonObject fields = elements.get(elementId);
         if (fields == null) {
             fields = new JsonObject();
             elements.put(elementId, fields);
         }
-        fields.add(field, toJson(value, "panel.patch.set." + elementId + "." + field));
+        fields.add(field, json);
         return this;
     }
 
@@ -376,13 +390,16 @@ public final class Patch extends Message {
             session.checkPanelLimits(panelId, newPlace.in, newPlace.rightSide(), newPlace.tab());
         }
         final long now = session.now();
+        final Object world = newPlace instanceof Place.Block ? session.worldKey() : null;
         return new Outgoing(msg, "panel.patch " + panelId, new Runnable() {
             @Override
             public void run() {
                 if (newToken != null) record.token = newToken;
                 if (newSize != null) record.size = newSize.clone();
-                if (newPlace != null) record.moveTo(newPlace);
-                else if (newSize != null && record.anchor != null) record.anchor = record.anchor.resized(newSize);
+                if (newPlace != null) {
+                    record.moveTo(newPlace);
+                    record.world = world;
+                } else if (newSize != null && record.anchor != null) record.anchor = record.anchor.resized(newSize);
                 record.rearm(newTtl != null ? newTtl : record.ttlMs, now);
                 for (Map.Entry<String, JsonObject> e : elements.entrySet()) {
                     Encoder.ButtonSpec b = record.buttons.get(e.getKey());

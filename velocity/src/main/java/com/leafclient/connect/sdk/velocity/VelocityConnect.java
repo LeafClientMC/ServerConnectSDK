@@ -14,6 +14,8 @@ import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.scheduler.ScheduledTask;
 import org.slf4j.Logger;
 
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -29,6 +31,7 @@ public final class VelocityConnect extends LeafConnect {
     private final Object plugin;
     private final ProxyServer proxy;
     private final Listener listener = new Listener();
+    private final ConcurrentHashMap<UUID, PlayerTransport> transports = new ConcurrentHashMap<>();
     private ScheduledTask task;
 
     private VelocityConnect(Object plugin, ProxyServer proxy, Logger logger) {
@@ -62,7 +65,9 @@ public final class VelocityConnect extends LeafConnect {
         task = null;
         flush();
         proxy.getEventManager().unregisterListener(plugin, listener);
+        proxy.getChannelRegistrar().unregister(IDENTIFIER);
         for (Session s : sessions()) disconnect(s.id());
+        transports.clear();
     }
 
     /**
@@ -149,7 +154,13 @@ public final class VelocityConnect extends LeafConnect {
         public void onMessage(PluginMessageEvent event) {
             if (!IDENTIFIER.equals(event.getIdentifier())) return;
             if (!(event.getSource() instanceof Player player)) return;
-            receive(player.getUniqueId(), player.getUsername(), player, event.getData(), new PlayerTransport(player));
+            event.setResult(PluginMessageEvent.ForwardResult.handled());
+            PlayerTransport t = transports.get(player.getUniqueId());
+            if (t == null || t.player != player) {
+                t = new PlayerTransport(player);
+                transports.put(player.getUniqueId(), t);
+            }
+            receive(player.getUniqueId(), player.getUsername(), player, event.getData(), t);
         }
 
         /**
@@ -159,7 +170,10 @@ public final class VelocityConnect extends LeafConnect {
          */
         @Subscribe(async = false)
         public void onDisconnect(DisconnectEvent event) {
-            disconnect(event.getPlayer().getUniqueId());
+            Player player = event.getPlayer();
+            disconnect(player.getUniqueId());
+            PlayerTransport t = transports.get(player.getUniqueId());
+            if (t != null && t.player == player) transports.remove(player.getUniqueId(), t);
         }
     }
 }

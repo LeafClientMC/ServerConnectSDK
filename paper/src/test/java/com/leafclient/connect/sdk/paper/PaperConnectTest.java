@@ -1,9 +1,12 @@
 package com.leafclient.connect.sdk.paper;
 
 import com.leafclient.connect.sdk.LeafConnect;
+import com.leafclient.connect.sdk.Session;
 import com.leafclient.connect.sdk.Toast;
 import com.leafclient.connect.sdk.WorldAnchor;
+import org.bukkit.Location;
 import org.bukkit.Server;
+import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Listener;
@@ -17,6 +20,8 @@ import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -25,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
@@ -360,5 +366,88 @@ class PaperConnectTest {
         server.entityScheduler = fake(FoliaEntityScheduler.class, (m, a) -> null);
         Player gone = server.player("Gone", FoliaEntity.class);
         assertNull(new FoliaScheduler(FoliaEntity.class).everyTick(server.plugin, gone, () -> { }, () -> { }));
+    }
+
+    @Test
+    void foliaStartsNoTaskBeforeAValidHello() {
+        Server_ server = new Server_();
+        FakeFolia folia = new FakeFolia();
+        PaperConnect.enable(server.plugin, folia);
+        Player steve = server.player("Steve");
+        server.listener.onPluginMessageReceived(LeafConnect.CHANNEL, steve, "{\"v\":1,\"t\":\"closed\"}".getBytes(StandardCharsets.UTF_8));
+        server.listener.onPluginMessageReceived(LeafConnect.CHANNEL, steve,
+                "{\"v\":1,\"t\":\"hello\",\"proto\":{\"min\":7,\"max\":9}}".getBytes(StandardCharsets.UTF_8));
+        assertTrue(folia.players.isEmpty());
+        server.hello(steve);
+        assertEquals(1, folia.players.size());
+    }
+
+    @Test
+    void foliaForgetsALinkWhoseTaskCouldNotStart() throws ReflectiveOperationException {
+        Server_ server = new Server_();
+        PaperConnect connect = PaperConnect.enable(server.plugin, (plugin, player, task, retired) -> null);
+        server.hello(server.player("Steve"));
+        Field links = PaperConnect.class.getDeclaredField("links");
+        links.setAccessible(true);
+        assertTrue(((Map<?, ?>) links.get(connect)).isEmpty());
+    }
+
+    @Test
+    void paperReusesOneTransportPerPlayer() throws ReflectiveOperationException {
+        Server_ server = new Server_();
+        PaperConnect connect = PaperConnect.enable(server.plugin, null);
+        Player steve = server.player("Steve");
+        Method transport = PaperConnect.class.getDeclaredMethod("transport", Player.class);
+        transport.setAccessible(true);
+        assertSame(transport.invoke(connect, steve), transport.invoke(connect, steve));
+    }
+
+    @Test
+    void entityReachCheckReusesTheEntityItFound() throws ReflectiveOperationException {
+        Server_ server = new Server_();
+        PaperConnect connect = PaperConnect.enable(server.plugin, null);
+        World world = fake(World.class, (m, a) -> null);
+        Entity cow = fake(Entity.class, (m, a) -> {
+            switch (m) {
+                case "getEntityId":
+                    return 42;
+                case "isValid":
+                    return true;
+                case "getWorld":
+                    return world;
+                case "getLocation":
+                    return new Location(world, 2, 64, 0);
+                default:
+                    return null;
+            }
+        });
+        int[] scans = new int[1];
+        UUID id = UUID.nameUUIDFromBytes(new byte[]{2});
+        Player steve = fake(Player.class, (m, a) -> {
+            switch (m) {
+                case "getUniqueId":
+                    return id;
+                case "getName":
+                    return "Steve";
+                case "isOnline":
+                    return true;
+                case "getEntityId":
+                    return 1;
+                case "getWorld":
+                    return world;
+                case "getEyeLocation":
+                    return new Location(world, 0, 65.6, 0);
+                case "getNearbyEntities":
+                    scans[0]++;
+                    return Collections.singletonList(cow);
+                default:
+                    return null;
+            }
+        });
+        server.listener.onPluginMessageReceived(LeafConnect.CHANNEL, steve, HELLO);
+        Session s = connect.session(steve);
+        WorldAnchor anchor = anchor(WorldAnchor.Kind.ENTITY, 42, null);
+        for (int i = 0; i < 3; i++) assertTrue(connect.inReach(s, anchor));
+        assertEquals(1, scans[0]);
     }
 }

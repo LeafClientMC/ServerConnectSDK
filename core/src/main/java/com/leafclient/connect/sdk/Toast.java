@@ -252,7 +252,7 @@ public final class Toast extends Message {
                     if (b.handler != null && !Action.anySends(b.actions)) throw Check.fail(at + ".on", "has a click handler but no Action.send()");
                 }
                 a.add(bj);
-                specs.put(b.id, new Encoder.ButtonSpec(b.id, b.handler, true, 0, false));
+                specs.put(b.id, new Encoder.ButtonSpec(b.id, b.handler, true, 0, false, Action.sentData(b.actions)));
             }
             o.add("buttons", a);
         }

@@ -44,7 +44,7 @@ public final class Closed {
     Closed(Session session, String what, String id, String why) {
         this.session = session;
         this.what = parse(What.class, what, What.OTHER);
-        this.id = id;
+        this.id = Json.clean(id, Limits.ID_CHARS);
         this.why = parse(Why.class, why, Why.OTHER);
     }
 
@@ -94,8 +94,9 @@ public final class Closed {
     }
 
     private static <E extends Enum<E>> E parse(Class<E> type, String raw, E fallback) {
-        if (raw == null) return fallback;
-        for (E e : type.getEnumConstants()) if (e.name().equals(raw.toUpperCase(Locale.ROOT))) return e;
+        if (raw == null || raw.length() > 16) return fallback;
+        String upper = raw.toUpperCase(Locale.ROOT);
+        for (E e : type.getEnumConstants()) if (e.name().equals(upper)) return e;
         return fallback;
     }
 

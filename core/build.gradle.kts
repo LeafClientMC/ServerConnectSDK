@@ -60,8 +60,38 @@ val testOnOldestGson by tasks.registering(Test::class) {
     classpath = sourceSets.test.get().runtimeClasspath.filter { !it.name.startsWith("gson-") } + oldestGsonRuntime
 }
 
+val standalone: SourceSet = sourceSets.create("standaloneTest") {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += sourceSets.main.get().output
+}
+
+dependencies {
+    "standaloneTestImplementation"(clientGson)
+    "standaloneTestImplementation"(platform("org.junit:junit-bom:5.10.2"))
+    "standaloneTestImplementation"("org.junit.jupiter:junit-jupiter")
+    "standaloneTestRuntimeOnly"("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.named<JavaCompile>("compileStandaloneTestJava") {
+    options.compilerArgs.remove("-Werror")
+}
+
+val standaloneTest by tasks.registering(Test::class) {
+    description = "Runs the tests that do not need the Leaf Client sources."
+    group = "verification"
+    testClassesDirs = standalone.output.classesDirs
+    classpath = standalone.runtimeClasspath
+}
+
+val standaloneTestOnOldestGson by tasks.registering(Test::class) {
+    description = "Runs the standalone tests with Gson 2.2.4, the version Bukkit 1.8.8 ships."
+    group = "verification"
+    testClassesDirs = standalone.output.classesDirs
+    classpath = standalone.runtimeClasspath.filter { !it.name.startsWith("gson-") } + oldestGsonRuntime
+}
+
 tasks.check {
-    dependsOn(testOnOldestGson)
+    dependsOn(testOnOldestGson, standaloneTest, standaloneTestOnOldestGson)
 }
 
 if (clientSources == null) {

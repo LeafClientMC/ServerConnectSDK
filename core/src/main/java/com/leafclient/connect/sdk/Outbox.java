@@ -33,6 +33,7 @@ final class Outbox {
     static final class Item {
         String json;
         int bytes;
+        int mergedBytes;
         final String label;
         final String type;
         final boolean alone;
@@ -48,6 +49,7 @@ final class Outbox {
         Item(String json, int bytes, String label, String type, boolean alone, String panel, JsonObject values) {
             this.json = json;
             this.bytes = bytes;
+            this.mergedBytes = bytes;
             this.label = label;
             this.type = type;
             this.alone = alone;
@@ -66,7 +68,16 @@ final class Outbox {
             }
         }
 
+        boolean canMerge(Item next, int maxBytes) {
+            if (set.size() + del.size() + next.set.size() + next.del.size() > Limits.VALUES) return false;
+            if (mergedBytes + next.bytes <= maxBytes) return true;
+            ensureJson();
+            mergedBytes = bytes;
+            return mergedBytes + next.bytes <= maxBytes;
+        }
+
         void merge(Item next) {
+            mergedBytes += next.bytes;
             for (Map.Entry<String, JsonElement> e : next.set.entrySet()) {
                 set.put(e.getKey(), e.getValue());
                 del.remove(e.getKey());
@@ -159,15 +170,30 @@ final class Outbox {
     private int batchSeq;
     private int chunkSeq;
     private int lockSeq;
+    private final int mergeBytes;
+    private int dropped;
+    private String lastProblem;
+
+    Outbox(int cap) {
+        this.mergeBytes = cap - batchOverhead("b2147483647");
+    }
 
     void add(Item item) {
         Item last = queue.isEmpty() ? null : queue.get(queue.size() - 1);
-        if (last != null && last.set != null && item.set != null) {
+        if (last != null && last.set != null && item.set != null && last.canMerge(item, mergeBytes)) {
             last.merge(item);
             return;
         }
         queue.add(item);
         waiting++;
+    }
+
+    String takeProblem() {
+        if (dropped == 0) return null;
+        String out = dropped + " message" + (dropped == 1 ? "" : "s") + ", the last: " + lastProblem;
+        dropped = 0;
+        lastProblem = null;
+        return out;
     }
 
     @SuppressWarnings("deprecation")
@@ -298,35 +324,45 @@ final class Outbox {
         List<Item> group = new ArrayList<Item>();
         int[] groupNeed = new int[3];
         int groupBytes = 0;
-        for (Item item : queue) {
-            if (item.set != null) item.ensureJson();
-            if (item.type.equals("mods.lock") || item.type.equals("mods.unlock")) {
-                groupBytes = flushGroup(group, groupNeed);
-                String rid = "l" + (++lockSeq);
-                refs.put(rid, item.label);
-                refs.put(item.type, item.label);
-                lockFrames.add(new Frame(withRid(item.json, rid), 1, true, null, 0, ++frameSeq, new int[3], 1, Collections.<String>emptyList()));
-                continue;
+        try {
+            for (Item item : queue) {
+                try {
+                    if (item.set != null) item.ensureJson();
+                    if (item.type.equals("mods.lock") || item.type.equals("mods.unlock")) {
+                        groupBytes = flushGroup(group, groupNeed);
+                        String rid = "l" + (++lockSeq);
+                        refs.put(rid, item.label);
+                        refs.put(item.type, item.label);
+                        lockFrames.add(new Frame(withRid(item.json, rid), 1, true, null, 0, ++frameSeq, new int[3], 1, Collections.<String>emptyList()));
+                        continue;
+                    }
+                    if (item.alone) groupBytes = flushGroup(group, groupNeed);
+                    String nextRid = "b" + (batchSeq + 1);
+                    if (!group.isEmpty() && (group.size() >= Limits.BATCH_MESSAGES || over(groupNeed, item.need)
+                            || batchOverhead(nextRid) + groupBytes + group.size() + item.bytes > cap)) {
+                        groupBytes = flushGroup(group, groupNeed);
+                        nextRid = "b" + (batchSeq + 1);
+                    }
+                    if (batchOverhead(nextRid) + item.bytes > cap) {
+                        groupBytes = flushGroup(group, groupNeed);
+                        chunk(item, cap);
+                        continue;
+                    }
+                    group.add(item);
+                    groupBytes += item.bytes;
+                    for (int k = 0; k < groupNeed.length; k++) groupNeed[k] += item.need[k];
+                    if (item.alone) groupBytes = flushGroup(group, groupNeed);
+                } catch (RuntimeException e) {
+                    group.remove(item);
+                    waiting--;
+                    dropped++;
+                    lastProblem = item.label + ": " + e.getMessage();
+                }
             }
-            if (item.alone) groupBytes = flushGroup(group, groupNeed);
-            String nextRid = "b" + (batchSeq + 1);
-            if (!group.isEmpty() && (group.size() >= Limits.BATCH_MESSAGES || over(groupNeed, item.need)
-                    || batchOverhead(nextRid) + groupBytes + group.size() + item.bytes > cap)) {
-                groupBytes = flushGroup(group, groupNeed);
-                nextRid = "b" + (batchSeq + 1);
-            }
-            if (batchOverhead(nextRid) + item.bytes > cap) {
-                groupBytes = flushGroup(group, groupNeed);
-                chunk(item, cap);
-                continue;
-            }
-            group.add(item);
-            groupBytes += item.bytes;
-            for (int k = 0; k < groupNeed.length; k++) groupNeed[k] += item.need[k];
-            if (item.alone) groupBytes = flushGroup(group, groupNeed);
+            flushGroup(group, groupNeed);
+        } finally {
+            queue.clear();
         }
-        flushGroup(group, groupNeed);
-        queue.clear();
     }
 
     private int flushGroup(List<Item> group, int[] groupNeed) {
@@ -359,14 +395,18 @@ final class Outbox {
         if (parts.size() > Limits.CHUNK_PARTS) {
             throw new IllegalStateException(item.label + " needs " + parts.size() + " chunks, the client accepts " + Limits.CHUNK_PARTS);
         }
-        refs.put(rid, describe(one));
-        refs.put(cid, describe(one) + " (chunked in " + parts.size() + " parts)");
-        List<String> panels = panels(one);
+        List<String> texts = new ArrayList<String>(parts.size());
         for (int i = 0; i < parts.size(); i++) {
             String json = Json.write(Chunker.message(cid, i, parts.size(), parts.get(i)));
             if (Json.utf8Length(json) > cap) throw new IllegalStateException("chunk " + cid + " part " + i + " is over " + cap + " bytes");
-            boolean last = i == parts.size() - 1;
-            frames.add(new Frame(json, last ? 2 : 1, false, cid, i, ++frameSeq, last ? item.need.clone() : new int[3], last ? 1 : 0, panels));
+            texts.add(json);
+        }
+        refs.put(rid, describe(one));
+        refs.put(cid, describe(one) + " (chunked in " + parts.size() + " parts)");
+        List<String> panels = panels(one);
+        for (int i = 0; i < texts.size(); i++) {
+            boolean last = i == texts.size() - 1;
+            frames.add(new Frame(texts.get(i), last ? 2 : 1, false, cid, i, ++frameSeq, last ? item.need.clone() : new int[3], last ? 1 : 0, panels));
         }
     }
 

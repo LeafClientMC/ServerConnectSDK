@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -214,7 +215,8 @@ public final class Waypoint extends Message {
         List<Action> effective = actions;
         if (effective == null && handler != null) effective = Collections.singletonList(Action.send());
         if (handler != null && !Action.anySends(effective)) throw Check.fail(at + " on", "has a click handler but no Action.send()");
-        final String token = effective == null ? null : session == null ? "preview" : session.newToken();
+        final Set<String> data = effective == null ? Collections.<String>emptySet() : Action.sentData(effective);
+        final String token = data.isEmpty() ? null : session == null ? "preview" : session.newToken();
         Json.str(o, "token", token);
         if (effective != null) o.add("on", Action.list(effective, at + " on"));
         if (session == null) return Outgoing.simple(o, "waypoint.set " + id);
@@ -224,7 +226,7 @@ public final class Waypoint extends Message {
         return new Outgoing(o, "waypoint.set " + id, new Runnable() {
             @Override
             public void run() {
-                session.putWaypoint(id, token, h, expires);
+                session.putWaypoint(id, token, h, data, expires);
             }
         });
     }

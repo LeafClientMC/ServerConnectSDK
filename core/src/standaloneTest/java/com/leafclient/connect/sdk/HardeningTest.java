@@ -47,7 +47,7 @@ class HardeningTest {
     final long[] clock = {1_000_000L};
     final Lines lines = new Lines();
     final Object player = new Object();
-    final ClientSim.Wire wire = new ClientSim.Wire(Limits.SERVER_MESSAGE_BYTES);
+    final TestWire wire = new TestWire(Limits.SERVER_MESSAGE_BYTES);
     final LeafConnect connect = new LeafConnect(lines, () -> clock[0]);
 
     void receive(String json) {
@@ -138,8 +138,8 @@ class HardeningTest {
         for (int i = 0; i < 8000; i++) deep.append('[');
         for (int i = 0; i < 8000; i++) deep.append(']');
         receive(deep.toString());
-        assertTrue(Json.tooDeep(deep.toString().getBytes(StandardCharsets.UTF_8), 64));
-        assertFalse(Json.tooDeep("{\"a\":\"[[[[[[\",\"b\":[1,{\"c\":2}]}".getBytes(StandardCharsets.UTF_8), 3));
+        assertFalse(Json.strictWithin(deep.toString(), 64));
+        assertTrue(Json.strictWithin("{\"a\":\"[[[[[[\",\"b\":[1,{\"c\":2}]}", 3));
         assertTrue(lines.warnings.isEmpty());
     }
 
@@ -154,7 +154,7 @@ class HardeningTest {
         broken.receive(ID, "Steve", player, HELLO.getBytes(StandardCharsets.UTF_8), wire);
         broken.session(ID).send(Panel.create("w", Place.block(0, 64, 0)).content(Ui.button("b", "Hi")));
         broken.flush();
-        JsonObject batch = BatchingTest.parse(new String(wire.frames.get(0), StandardCharsets.UTF_8));
+        JsonObject batch = TestWire.parse(wire.text(0));
         String token = batch.getAsJsonArray("msgs").get(0).getAsJsonObject().getAsJsonObject("panel").get("token").getAsString();
         for (int i = 1; i <= 20; i++) {
             broken.receive(ID, "Steve", player, ("{\"v\":1,\"t\":\"click\",\"src\":\"block\",\"panel\":\"w\",\"button\":\"b\",\"token\":\""
@@ -179,7 +179,7 @@ class HardeningTest {
         s.send(Values.create().delete("k0"));
         connect.flush();
         assertEquals(1, wire.frames.size());
-        JsonObject batch = BatchingTest.parse(new String(wire.frames.get(0), StandardCharsets.UTF_8));
+        JsonObject batch = TestWire.parse(wire.text(0));
         JsonObject values = batch.getAsJsonArray("msgs").get(0).getAsJsonObject();
         assertEquals(199, values.getAsJsonObject("set").entrySet().size());
         assertEquals(1999, values.getAsJsonObject("set").get("k199").getAsInt());

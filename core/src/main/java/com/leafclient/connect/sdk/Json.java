@@ -4,7 +4,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 
+import java.io.IOException;
+import java.io.StringReader;
 import java.nio.charset.Charset;
 import java.util.List;
 import java.util.Map;
@@ -12,6 +16,12 @@ import java.util.Map;
 final class Json {
 
     static final Charset UTF_8 = Charset.forName("UTF-8");
+    private static final ThreadLocal<char[]> SCRATCH = new ThreadLocal<char[]>() {
+        @Override
+        protected char[] initialValue() {
+            return new char[1024];
+        }
+    };
 
     private Json() {}
 
@@ -52,9 +62,23 @@ final class Json {
     }
 
     static int utf8Length(String s) {
-        int n = 0;
         int len = s.length();
-        for (int i = 0; i < len; i++) {
+        if (len < 128) return utf8LengthFrom(s, 0);
+        char[] buf = SCRATCH.get();
+        for (int start = 0; start < len; start += buf.length) {
+            int end = Math.min(len, start + buf.length);
+            s.getChars(start, end, buf, 0);
+            int high = 0;
+            for (int i = 0; i < end - start; i++) high |= buf[i];
+            if (high >= 0x80) return start + utf8LengthFrom(s, start);
+        }
+        return len;
+    }
+
+    private static int utf8LengthFrom(String s, int from) {
+        int len = s.length();
+        int n = 0;
+        for (int i = from; i < len; i++) {
             char c = s.charAt(i);
             if (c < 0x80) {
                 n++;
@@ -84,32 +108,66 @@ final class Json {
     static String clean(String s, int max) {
         if (s == null) return null;
         int len = Math.min(s.length(), max);
+        int first = 0;
+        while (first < len && !unsafe(s.charAt(first))) first++;
+        if (first == s.length()) return s;
         StringBuilder sb = new StringBuilder(len + 3);
         for (int i = 0; i < len; i++) {
             char c = s.charAt(i);
-            sb.append(Character.isISOControl(c) || c == ' ' || c == ' ' ? ' ' : c);
+            sb.append(unsafe(c) ? ' ' : c);
         }
         if (s.length() > max) sb.append("...");
         return sb.toString();
     }
 
-    static boolean tooDeep(byte[] data, int max) {
-        int depth = 0;
-        boolean inString = false;
-        for (int i = 0; i < data.length; i++) {
-            byte b = data[i];
-            if (inString) {
-                if (b == '\\') i++;
-                else if (b == '"') inString = false;
-            } else if (b == '"') {
-                inString = true;
-            } else if (b == '{' || b == '[') {
-                if (++depth > max) return true;
-            } else if (b == '}' || b == ']') {
-                depth--;
-            }
+    static boolean unsafe(char c) {
+        return Character.isISOControl(c) || c == ' ' || c == ' ' || c == '‎' || c == '‏' || c == '؜'
+                || (c >= '‪' && c <= '‮') || (c >= '⁦' && c <= '⁩');
+    }
+
+    static boolean strictWithin(String text, int maxDepth) {
+        JsonReader r = new JsonReader(new StringReader(text));
+        try {
+            int depth = 0;
+            do {
+                switch (r.peek()) {
+                    case BEGIN_OBJECT:
+                        if (++depth > maxDepth) return false;
+                        r.beginObject();
+                        break;
+                    case BEGIN_ARRAY:
+                        if (++depth > maxDepth) return false;
+                        r.beginArray();
+                        break;
+                    case END_OBJECT:
+                        depth--;
+                        r.endObject();
+                        break;
+                    case END_ARRAY:
+                        depth--;
+                        r.endArray();
+                        break;
+                    case NAME:
+                        r.nextName();
+                        break;
+                    case STRING:
+                    case NUMBER:
+                        r.nextString();
+                        break;
+                    case BOOLEAN:
+                        r.nextBoolean();
+                        break;
+                    case NULL:
+                        r.nextNull();
+                        break;
+                    default:
+                        return false;
+                }
+            } while (depth > 0);
+            return r.peek() == JsonToken.END_DOCUMENT;
+        } catch (IOException | RuntimeException e) {
+            return false;
         }
-        return false;
     }
 
     static int depth(JsonElement e) {

@@ -6,6 +6,7 @@ import com.leafclient.connect.sdk.Limits;
 import com.leafclient.connect.sdk.Session;
 import com.leafclient.connect.sdk.Transport;
 import com.leafclient.connect.sdk.WorldAnchor;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
@@ -19,6 +20,8 @@ import org.bukkit.plugin.messaging.Messenger;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.lang.ref.WeakReference;
+import java.lang.reflect.Method;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,6 +45,9 @@ public final class PaperConnect extends LeafConnect {
     private final Bridge bridge = new Bridge();
     private final PlayerScheduler playerScheduler;
     private final ConcurrentHashMap<UUID, PlayerLink> links = new ConcurrentHashMap<UUID, PlayerLink>();
+    private final ConcurrentHashMap<UUID, PlayerTransport> transports = new ConcurrentHashMap<UUID, PlayerTransport>();
+    private final ConcurrentHashMap<UUID, WeakReference<Entity>> targets = new ConcurrentHashMap<UUID, WeakReference<Entity>>();
+    private final Method ownedByCurrentRegion;
     private BukkitTask task;
     private volatile boolean reachCheck = true;
 
@@ -50,6 +56,15 @@ public final class PaperConnect extends LeafConnect {
         this.plugin = plugin;
         this.playerScheduler = playerScheduler;
         this.maxMessageBytes = serverMessageLimit();
+        this.ownedByCurrentRegion = playerScheduler == null ? null : regionCheck();
+    }
+
+    private static Method regionCheck() {
+        try {
+            return Bukkit.class.getMethod("isOwnedByCurrentRegion", Entity.class);
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
     }
 
     /**
@@ -93,6 +108,8 @@ public final class PaperConnect extends LeafConnect {
         task = null;
         for (PlayerLink link : links.values()) link.cancel();
         links.clear();
+        transports.clear();
+        targets.clear();
         flush();
         HandlerList.unregisterAll(bridge);
         Messenger messenger = plugin.getServer().getMessenger();
@@ -167,7 +184,7 @@ public final class PaperConnect extends LeafConnect {
                 z = anchor.z();
                 break;
             default: {
-                Entity target = nearby(player, anchor);
+                Entity target = target(player, anchor);
                 if (target == null) return false;
                 Location at = target.getLocation();
                 x = at.getX() + anchor.offsetX();
@@ -183,12 +200,51 @@ public final class PaperConnect extends LeafConnect {
         return dx * dx + dy * dy + dz * dz <= max * max;
     }
 
+    @Override
+    protected Object worldOf(Session session) {
+        Player player = session.player();
+        return player.getWorld().getUID();
+    }
+
+    @Override
+    protected void started(Session session, Transport transport) {
+        if (!(transport instanceof PlayerLink)) return;
+        PlayerLink link = (PlayerLink) transport;
+        UUID id = link.player.getUniqueId();
+        PlayerLink old = links.put(id, link);
+        if (old != null && old != link) old.cancel();
+        if (old != link) link.start();
+    }
+
+    private Entity target(Player player, WorldAnchor anchor) {
+        UUID id = player.getUniqueId();
+        WeakReference<Entity> ref = targets.get(id);
+        Entity cached = ref == null ? null : ref.get();
+        if (cached != null && is(cached, anchor) && owned(cached) && cached.isValid() && cached.getWorld().equals(player.getWorld())) return cached;
+        Entity found = nearby(player, anchor);
+        if (found != null && found != player) targets.put(id, new WeakReference<Entity>(found));
+        return found;
+    }
+
+    private boolean owned(Entity entity) {
+        if (playerScheduler == null) return true;
+        if (ownedByCurrentRegion == null) return false;
+        try {
+            return Boolean.TRUE.equals(ownedByCurrentRegion.invoke(null, entity));
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static boolean is(Entity e, WorldAnchor anchor) {
+        return anchor.kind() == WorldAnchor.Kind.PLAYER ? e instanceof Player && e.getUniqueId().equals(anchor.player()) : e.getEntityId() == anchor.entityId();
+    }
+
     static Entity nearby(Player player, WorldAnchor anchor) {
-        boolean byPlayer = anchor.kind() == WorldAnchor.Kind.PLAYER;
-        if (byPlayer ? player.getUniqueId().equals(anchor.player()) : player.getEntityId() == anchor.entityId()) return player;
+        if (is(player, anchor)) return player;
         double max = anchor.maxClickDistance();
         for (Entity e : player.getNearbyEntities(max + Math.abs(anchor.offsetX()), max + Math.abs(anchor.offsetY()) + 2, max + Math.abs(anchor.offsetZ()))) {
-            if (byPlayer ? e instanceof Player && e.getUniqueId().equals(anchor.player()) : e.getEntityId() == anchor.entityId()) return e;
+            if (is(e, anchor)) return e;
         }
         return null;
     }
@@ -203,15 +259,16 @@ public final class PaperConnect extends LeafConnect {
     }
 
     private Transport transport(Player player) {
-        if (playerScheduler == null) return new PlayerTransport(player);
         UUID id = player.getUniqueId();
+        if (playerScheduler == null) {
+            PlayerTransport t = transports.get(id);
+            if (t != null && t.player == player) return t;
+            PlayerTransport fresh = new PlayerTransport(player);
+            transports.put(id, fresh);
+            return fresh;
+        }
         PlayerLink link = links.get(id);
-        if (link != null && link.player == player) return link;
-        PlayerLink fresh = new PlayerLink(player);
-        PlayerLink old = links.put(id, fresh);
-        if (old != null) old.cancel();
-        fresh.start();
-        return fresh;
+        return link != null && link.player == player ? link : new PlayerLink(player);
     }
 
     private final class PlayerTransport implements Transport {
@@ -240,6 +297,8 @@ public final class PaperConnect extends LeafConnect {
         private final Player player;
         private final Queue<byte[]> pending = new ConcurrentLinkedQueue<byte[]>();
         private volatile Runnable cancel;
+        private int failures;
+        private long lastFailureLog = Long.MIN_VALUE / 2;
 
         PlayerLink(Player player) {
             this.player = player;
@@ -257,6 +316,7 @@ public final class PaperConnect extends LeafConnect {
                     links.remove(player.getUniqueId(), PlayerLink.this);
                 }
             });
+            if (cancel == null) links.remove(player.getUniqueId(), this);
         }
 
         void cancel() {
@@ -273,8 +333,13 @@ public final class PaperConnect extends LeafConnect {
                 try {
                     if (player.isOnline()) player.sendPluginMessage(plugin, CHANNEL, frame);
                 } catch (RuntimeException e) {
-                    pending.clear();
-                    log().error("could not send a Server Connect message to " + player.getName(), e);
+                    failures++;
+                    long now = System.currentTimeMillis();
+                    if (now - lastFailureLog >= 5000) {
+                        lastFailureLog = now;
+                        log().error("could not send " + failures + " Server Connect message" + (failures == 1 ? "" : "s") + " to " + player.getName(), e);
+                        failures = 0;
+                    }
                     return;
                 }
             }
@@ -321,6 +386,9 @@ public final class PaperConnect extends LeafConnect {
         public void onQuit(PlayerQuitEvent event) {
             Player player = event.getPlayer();
             disconnect(player.getUniqueId());
+            targets.remove(player.getUniqueId());
+            PlayerTransport t = transports.get(player.getUniqueId());
+            if (t != null && t.player == player) transports.remove(player.getUniqueId(), t);
             PlayerLink link = links.get(player.getUniqueId());
             if (link != null && link.player == player && links.remove(player.getUniqueId(), link)) link.cancel();
         }

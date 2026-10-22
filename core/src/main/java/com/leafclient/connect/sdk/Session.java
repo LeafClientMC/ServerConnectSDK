@@ -34,6 +34,8 @@ public final class Session {
     private static final int TOKEN_LENGTH = 12;
     private static final long TTL_GRACE_MS = 3000;
     private static final long COOLDOWN_TOLERANCE_MS = 250;
+    private static final int MAX_PRESSES = Limits.PANELS * Limits.BUTTONS_PER_PANEL + Limits.TOAST_BUTTONS * 32;
+    static final int MESSAGES_PER_SECOND = 40;
     private static final Set<String> RAW_TYPES = new HashSet<String>(java.util.Arrays.asList(
             "welcome", "panel.set", "panel.patch", "panel.remove", "panel.open", "panel.close", "values.set", "menu.set", "menu.remove",
             "menu.open", "menu.close", "key.set", "toast", "toast.remove", "waypoint.set", "waypoint.remove", "world.set", "mods.lock",
@@ -52,11 +54,13 @@ public final class Session {
     private static final class WaypointRecord {
         final String token;
         final Consumer<Click> handler;
+        final Set<String> data;
         final long expiresAt;
 
-        WaypointRecord(String token, Consumer<Click> handler, long expiresAt) {
+        WaypointRecord(String token, Consumer<Click> handler, Set<String> data, long expiresAt) {
             this.token = token;
             this.handler = handler;
+            this.data = data;
             this.expiresAt = expiresAt;
         }
     }
@@ -83,8 +87,9 @@ public final class Session {
     private final int cap;
     private ClientInfo client;
     private Prefs prefs;
-    private final Outbox outbox = new Outbox();
+    private final Outbox outbox;
     final Object sendLock = new Object();
+    private List<byte[]> unsent;
     private final Map<String, PanelRecord> panels = new LinkedHashMap<String, PanelRecord>();
     private final Map<String, ToastRecord> toasts = new LinkedHashMap<String, ToastRecord>(16, 0.75f, false) {
         private static final long serialVersionUID = 1L;
@@ -96,8 +101,18 @@ public final class Session {
     };
     private final Map<String, WaypointRecord> waypoints = new LinkedHashMap<String, WaypointRecord>();
     private final Set<String> values = new HashSet<String>();
+    private final Map<String, Long> lastPress = new LinkedHashMap<String, Long>(16, 0.75f, true) {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
+            return size() > MAX_PRESSES;
+        }
+    };
     private final Bucket clickRate = new Bucket(32, 32);
+    final Bucket messageRate = new Bucket(MESSAGES_PER_SECOND, 2 * MESSAGES_PER_SECOND);
     final Throttle warnings = new Throttle(0.2, 5);
+    final Throttle failures = new Throttle(0.2, 5);
     private long lastSeq;
     private long nextExpire = Long.MIN_VALUE;
 
@@ -108,6 +123,7 @@ public final class Session {
         this.player = player;
         this.transport = transport;
         this.cap = Math.min(Limits.SERVER_MESSAGE_BYTES, transport.maxMessageBytes());
+        this.outbox = new Outbox(cap);
         this.client = client;
         this.prefs = prefs;
     }
@@ -587,8 +603,23 @@ public final class Session {
             expire(now);
             nextExpire = now + 1000;
         }
+        if (unsent != null) {
+            List<byte[]> retry = unsent;
+            unsent = null;
+            return retry;
+        }
         if (outbox.idle()) return java.util.Collections.emptyList();
-        return outbox.drain(now, cap);
+        List<byte[]> out = outbox.drain(now, cap);
+        String problem = outbox.takeProblem();
+        if (problem != null) {
+            String line = warnings.admit("dropped Server Connect messages for " + name + ": " + problem, now);
+            if (line != null) connect.log().warn(line);
+        }
+        return out;
+    }
+
+    synchronized void keepUnsent(List<byte[]> frames) {
+        if (!frames.isEmpty()) unsent = new ArrayList<byte[]>(frames);
     }
 
     Transport transport() {
@@ -596,7 +627,7 @@ public final class Session {
     }
 
     synchronized boolean idle() {
-        return outbox.idle();
+        return unsent == null && outbox.idle();
     }
 
     long now() {
@@ -605,7 +636,16 @@ public final class Session {
 
     String newToken() {
         char[] out = new char[TOKEN_LENGTH];
-        for (int i = 0; i < out.length; i++) out[i] = ALPHABET[RANDOM.nextInt(ALPHABET.length)];
+        byte[] random = new byte[TOKEN_LENGTH + 4];
+        int limit = 256 - 256 % ALPHABET.length;
+        int filled = 0;
+        while (filled < out.length) {
+            RANDOM.nextBytes(random);
+            for (int i = 0; i < random.length && filled < out.length; i++) {
+                int b = random[i] & 0xff;
+                if (b < limit) out[filled++] = ALPHABET[b % ALPHABET.length];
+            }
+        }
         return new String(out);
     }
 
@@ -617,6 +657,7 @@ public final class Session {
         toasts.clear();
         waypoints.clear();
         values.clear();
+        unsent = null;
         for (String dropped : outbox.clearQueued()) panels.remove(dropped);
     }
 
@@ -648,9 +689,13 @@ public final class Session {
         if (token != null) toasts.put(toastId, new ToastRecord(token, buttons));
     }
 
-    void putWaypoint(String waypointId, String token, Consumer<Click> handler, long expiresAt) {
+    void putWaypoint(String waypointId, String token, Consumer<Click> handler, Set<String> data, long expiresAt) {
         waypoints.remove(waypointId);
-        waypoints.put(waypointId, new WaypointRecord(token, handler, expiresAt));
+        waypoints.put(waypointId, new WaypointRecord(token, handler, data, expiresAt));
+    }
+
+    Object worldKey() {
+        return connect.worldOf(this);
     }
 
     void applyValues(List<String> set, List<String> removed) {
@@ -726,43 +771,50 @@ public final class Session {
         String token = Json.getString(m, "token");
         String data = Json.getString(m, "data");
         boolean confirmed = Json.getBool(m, "confirmed", false);
-        JsonElement seqJson = m.get("seq");
-        Long seqValue = Json.integer(seqJson);
+        Long seqValue = Json.integer(m.get("seq"));
         if (src == null || panel == null || button == null || seqValue == null) {
-            return reject(Rejection.Reason.MALFORMED, "missing src, panel, button or seq", panel, button, -1);
+            return reject(Rejection.Reason.MALFORMED, panel, button, -1, "missing src, panel, button or seq");
         }
         long seq = seqValue;
-        if (seq <= lastSeq) return reject(Rejection.Reason.REPLAY, "seq " + seq + " is not above " + lastSeq, panel, button, seq);
+        if (seq <= lastSeq) return reject(Rejection.Reason.REPLAY, panel, button, seq, "seq ", seq, " is not above ", lastSeq);
         lastSeq = seq;
-        if (!clickRate.take(1, now)) return reject(Rejection.Reason.RATE, "more than 32 clicks per second", panel, button, seq);
+        if (!clickRate.take(1, now)) return reject(Rejection.Reason.RATE, panel, button, seq, "more than 32 clicks per second");
         if ("toast".equals(src)) {
             ToastRecord t = toasts.get(panel);
             if (t == null) return unknown(panel, button, seq);
-            if (!t.token.equals(token)) return reject(Rejection.Reason.BAD_TOKEN, "token does not match the last toast " + panel, panel, button, seq);
+            if (!t.token.equals(token)) return reject(Rejection.Reason.BAD_TOKEN, panel, button, seq, "token does not match the last toast ", panel);
             Encoder.ButtonSpec b = t.buttons.get(button);
-            if (b == null) return reject(Rejection.Reason.UNKNOWN_BUTTON, "toast " + panel + " has no button " + button, panel, button, seq);
+            if (b == null || b.data.isEmpty()) return reject(Rejection.Reason.UNKNOWN_BUTTON, panel, button, seq, "toast ", panel, " has no button ", button, " that sends clicks");
+            if (!b.data.contains(data)) return badData(panel, button, seq);
             return accept(new Click(this, src, panel, button, data, confirmed, seq, FormValues.EMPTY, null), b.handler);
         }
         if ("item".equals(src)) return unknown(panel, button, seq);
         if ("waypoint".equals(src)) {
             WaypointRecord w = waypoints.get(panel);
             if (w == null) return unknown(panel, button, seq);
-            if (w.expiresAt > 0 && now > w.expiresAt + TTL_GRACE_MS) return reject(Rejection.Reason.EXPIRED, "waypoint ttl ended", panel, button, seq);
-            if (w.token == null || !w.token.equals(token)) return reject(Rejection.Reason.BAD_TOKEN, "token does not match the last waypoint " + panel, panel, button, seq);
-            if (!"label".equals(button)) return reject(Rejection.Reason.UNKNOWN_BUTTON, "a waypoint click is on its label", panel, button, seq);
+            if (w.expiresAt > 0 && now > w.expiresAt + TTL_GRACE_MS) return reject(Rejection.Reason.EXPIRED, panel, button, seq, "waypoint ttl ended");
+            if (w.token == null || !w.token.equals(token)) return reject(Rejection.Reason.BAD_TOKEN, panel, button, seq, "token does not match the last waypoint ", panel);
+            if (!"label".equals(button)) return reject(Rejection.Reason.UNKNOWN_BUTTON, panel, button, seq, "a waypoint click is on its label");
+            if (!w.data.contains(data)) return badData(panel, button, seq);
             return accept(new Click(this, src, panel, button, data, confirmed, seq, FormValues.EMPTY, null), w.handler);
         }
         PanelRecord p = panels.get(panel);
         if (p == null) return unknown(panel, button, seq);
-        if (p.expiresAt > 0 && now > p.expiresAt + TTL_GRACE_MS) return reject(Rejection.Reason.EXPIRED, "panel ttl ended", panel, button, seq);
-        if (!p.token.equals(token)) return reject(Rejection.Reason.BAD_TOKEN, "token does not match the last panel.set or patch of " + panel, panel, button, seq);
-        if (!p.in.equals(src)) return reject(Rejection.Reason.WRONG_SOURCE, "click came from " + src + " but the panel is in " + p.in, panel, button, seq);
+        if (p.expiresAt > 0 && now > p.expiresAt + TTL_GRACE_MS) return reject(Rejection.Reason.EXPIRED, panel, button, seq, "panel ttl ended");
+        if (!p.token.equals(token)) return reject(Rejection.Reason.BAD_TOKEN, panel, button, seq, "token does not match the last panel.set or patch of ", panel);
+        if (!p.in.equals(src)) return reject(Rejection.Reason.WRONG_SOURCE, panel, button, seq, "click came from ", src, " but the panel is in ", p.in);
         Encoder.ButtonSpec b = p.buttons.get(button);
-        if (b == null) return reject(Rejection.Reason.UNKNOWN_BUTTON, "panel " + panel + " has no button " + button, panel, button, seq);
-        if (!b.enabled) return reject(Rejection.Reason.DISABLED, "button " + button + " was sent disabled", panel, button, seq);
-        Long last = p.lastPress.get(button);
-        if (last != null && b.onePressOneClick && b.cooldownMs > 0 && now - last < b.cooldownMs - COOLDOWN_TOLERANCE_MS) {
-            return reject(Rejection.Reason.COOLDOWN, "pressed " + (now - last) + " ms after the last press, cooldown " + b.cooldownMs + " ms", panel, button, seq);
+        if (b == null) return reject(Rejection.Reason.UNKNOWN_BUTTON, panel, button, seq, "panel ", panel, " has no button ", button);
+        if (b.data.isEmpty()) return reject(Rejection.Reason.UNKNOWN_BUTTON, panel, button, seq, "button ", button, " sends no clicks");
+        if (!b.enabled) return reject(Rejection.Reason.DISABLED, panel, button, seq, "button ", button, " was sent disabled");
+        if (!b.data.contains(data)) return badData(panel, button, seq);
+        if (p.world != null && p.anchor != null && p.anchor.kind() == WorldAnchor.Kind.BLOCK && !p.world.equals(connect.worldOf(this))) {
+            return reject(Rejection.Reason.OUT_OF_REACH, panel, button, seq, "player is not in the world of block panel ", panel);
+        }
+        String pressKey = panel + '\n' + button;
+        Long last = b.onePressOneClick && b.cooldownMs > 0 ? lastPress.get(pressKey) : null;
+        if (last != null && now - last < b.cooldownMs - COOLDOWN_TOLERANCE_MS) {
+            return reject(Rejection.Reason.COOLDOWN, panel, button, seq, "pressed ", now - last, " ms after the last press, cooldown ", b.cooldownMs, " ms");
         }
         FormValues inputs = FormValues.EMPTY;
         if (!p.inputs.isEmpty()) {
@@ -784,10 +836,10 @@ public final class Session {
                 if (value == null) problem = "input " + spec.id + " has a value the form cannot produce";
                 else parsed.put(spec.id, value);
             }
-            if (problem != null) return reject(Rejection.Reason.BAD_INPUTS, problem, panel, button, seq);
+            if (problem != null) return reject(Rejection.Reason.BAD_INPUTS, panel, button, seq, problem);
             inputs = new FormValues(parsed);
         }
-        p.lastPress.put(button, now);
+        lastPress.put(pressKey, now);
         return accept(new Click(this, src, panel, button, data, confirmed, seq, inputs, p.anchor), b.handler);
     }
 
@@ -796,7 +848,7 @@ public final class Session {
         JsonPrimitive p = v.getAsJsonPrimitive();
         switch (spec.kind) {
             case TEXT:
-                return p.isString() && p.getAsString().length() <= spec.maxChars ? p.getAsString() : null;
+                return p.isString() && p.getAsString().length() <= spec.maxChars && plainText(p.getAsString()) ? p.getAsString() : null;
             case TOGGLE:
                 return p.isBoolean() ? p.getAsBoolean() : null;
             case CHOICE:
@@ -805,6 +857,10 @@ public final class Session {
                 if (!p.isNumber()) return null;
                 double d = p.getAsDouble();
                 if (Double.isNaN(d) || Double.isInfinite(d) || d < spec.min - 1e-6 || d > spec.max + 1e-6) return null;
+                if (spec.step > 0 && Math.abs(d - spec.max) > 1e-6) {
+                    double steps = (d - spec.min) / spec.step;
+                    if (Math.abs(steps - Math.rint(steps)) > 1e-6 * Math.max(1, Math.abs(steps))) return null;
+                }
                 return d;
             }
             default:
@@ -812,16 +868,28 @@ public final class Session {
         }
     }
 
+    private static boolean plainText(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '§' || Json.unsafe(c)) return false;
+        }
+        return true;
+    }
+
     private Resolved accept(Click click, Consumer<Click> handler) {
         return new Resolved(click, handler, null, false);
     }
 
-    private Resolved reject(Rejection.Reason reason, String detail, String panel, String button, long seq) {
-        return new Resolved(null, null, new Rejection(this, reason, detail, panel, button, seq), false);
+    private Resolved reject(Rejection.Reason reason, String panel, String button, long seq, Object... detail) {
+        return new Resolved(null, null, new Rejection(this, reason, panel, button, seq, detail), false);
+    }
+
+    private Resolved badData(String panel, String button, long seq) {
+        return reject(Rejection.Reason.BAD_DATA, panel, button, seq, "button ", button, " does not send that data");
     }
 
     private Resolved unknown(String panel, String button, long seq) {
-        return new Resolved(null, null, new Rejection(this, Rejection.Reason.UNKNOWN_PANEL, "this plugin sent no " + panel, panel, button, seq), true);
+        return new Resolved(null, null, new Rejection(this, Rejection.Reason.UNKNOWN_PANEL, panel, button, seq, "this plugin sent no ", panel), true);
     }
 
     private void expire(long now) {

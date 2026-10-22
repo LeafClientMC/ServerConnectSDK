@@ -597,6 +597,7 @@ public final class Button extends Element<Button> {
         if (handler != null && effective != null && !Action.anySends(effective)) {
             throw enc.fail(path + ".on", "button " + id + " has a click handler but none of its actions is Action.send(), so the server would never hear the click");
         }
-        enc.buttonSpecs.put(id, new Encoder.ButtonSpec(id, handler, enabled, cooldownMs == null ? 0 : cooldownMs, Action.onePressOneClick(actions)));
+        enc.buttonSpecs.put(id, new Encoder.ButtonSpec(id, handler, enabled, cooldownMs == null ? 0 : cooldownMs, Action.onePressOneClick(actions),
+                Action.sentData(actions)));
     }
 }

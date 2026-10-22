@@ -41,10 +41,10 @@ public final class ClientInfo {
         JsonObject client = object(hello, "client");
         JsonObject proto = object(hello, "proto");
         return new ClientInfo(
-                orEmpty(Json.getString(client, "name")),
-                orEmpty(Json.getString(client, "version")),
-                orEmpty(Json.getString(client, "mc")),
-                orEmpty(Json.getString(client, "loader")),
+                text(client, "name"),
+                text(client, "version"),
+                text(client, "mc"),
+                text(client, "loader"),
                 integer(proto, "min", 1),
                 integer(proto, "max", 1),
                 Collections.unmodifiableSet(new LinkedHashSet<String>(strings(hello, "caps"))),
@@ -161,12 +161,13 @@ public final class ClientInfo {
         JsonArray a = e.getAsJsonArray();
         for (int i = 0; i < a.size() && i < 256; i++) {
             JsonElement v = a.get(i);
-            if (v.isJsonPrimitive() && v.getAsJsonPrimitive().isString()) out.add(v.getAsString());
+            if (v.isJsonPrimitive() && v.getAsJsonPrimitive().isString()) out.add(Json.clean(v.getAsString(), Limits.ID_CHARS));
         }
         return out;
     }
 
-    private static String orEmpty(String s) {
+    private static String text(JsonObject o, String key) {
+        String s = Json.clean(Json.getString(o, key), Limits.ID_CHARS);
         return s == null ? "" : s;
     }
 }

@@ -14,6 +14,8 @@ import net.md_5.bungee.api.scheduler.ScheduledTask;
 import net.md_5.bungee.event.EventHandler;
 
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -27,6 +29,7 @@ public final class BungeeConnect extends LeafConnect {
 
     private final Plugin plugin;
     private final Bridge bridge = new Bridge();
+    private final ConcurrentHashMap<UUID, PlayerTransport> transports = new ConcurrentHashMap<UUID, PlayerTransport>();
     private ScheduledTask task;
 
     private BungeeConnect(Plugin plugin) {
@@ -62,7 +65,9 @@ public final class BungeeConnect extends LeafConnect {
         task = null;
         flush();
         plugin.getProxy().getPluginManager().unregisterListener(bridge);
+        plugin.getProxy().unregisterChannel(CHANNEL);
         for (Session s : sessions()) disconnect(s.id());
+        transports.clear();
     }
 
     /**
@@ -125,7 +130,13 @@ public final class BungeeConnect extends LeafConnect {
                 return;
             }
             if (!CHANNEL.equals(event.getTag())) return;
-            receive(player.getUniqueId(), player.getName(), player, event.getData(), new PlayerTransport(player));
+            event.setCancelled(true);
+            PlayerTransport t = transports.get(player.getUniqueId());
+            if (t == null || t.player != player) {
+                t = new PlayerTransport(player);
+                transports.put(player.getUniqueId(), t);
+            }
+            receive(player.getUniqueId(), player.getName(), player, event.getData(), t);
         }
 
         /**
@@ -135,7 +146,10 @@ public final class BungeeConnect extends LeafConnect {
          */
         @EventHandler
         public void onQuit(PlayerDisconnectEvent event) {
-            disconnect(event.getPlayer().getUniqueId());
+            ProxiedPlayer player = event.getPlayer();
+            disconnect(player.getUniqueId());
+            PlayerTransport t = transports.get(player.getUniqueId());
+            if (t != null && t.player == player) transports.remove(player.getUniqueId(), t);
         }
     }
 }

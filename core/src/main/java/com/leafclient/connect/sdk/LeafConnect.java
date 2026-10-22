@@ -42,6 +42,7 @@ public class LeafConnect {
     private final List<Consumer<Rejection>> rejectionListeners = new CopyOnWriteArrayList<Consumer<Rejection>>();
     private final ConcurrentHashMap<UUID, Bucket> hellos = new ConcurrentHashMap<UUID, Bucket>();
     private final Throttle warnings = new Throttle(0.2, 5);
+    private final Throttle failures = new Throttle(0.2, 5);
     private volatile boolean logClientErrors = true;
 
     /**
@@ -77,7 +78,7 @@ public class LeafConnect {
      * @return this instance
      */
     public LeafConnect onReady(Consumer<Session> listener) {
-        readyListeners.add(listener);
+        readyListeners.add(notNull(listener));
         return this;
     }
 
@@ -88,7 +89,7 @@ public class LeafConnect {
      * @return this instance
      */
     public LeafConnect onQuit(Consumer<Session> listener) {
-        quitListeners.add(listener);
+        quitListeners.add(notNull(listener));
         return this;
     }
 
@@ -99,7 +100,7 @@ public class LeafConnect {
      * @return this instance
      */
     public LeafConnect onPrefs(Consumer<Session> listener) {
-        prefsListeners.add(listener);
+        prefsListeners.add(notNull(listener));
         return this;
     }
 
@@ -110,7 +111,7 @@ public class LeafConnect {
      * @return this instance
      */
     public LeafConnect onClick(Consumer<Click> listener) {
-        clickListeners.add(listener);
+        clickListeners.add(notNull(listener));
         return this;
     }
 
@@ -121,7 +122,7 @@ public class LeafConnect {
      * @return this instance
      */
     public LeafConnect onClosed(Consumer<Closed> listener) {
-        closedListeners.add(listener);
+        closedListeners.add(notNull(listener));
         return this;
     }
 
@@ -132,7 +133,7 @@ public class LeafConnect {
      * @return this instance
      */
     public LeafConnect onError(Consumer<ClientError> listener) {
-        errorListeners.add(listener);
+        errorListeners.add(notNull(listener));
         return this;
     }
 
@@ -143,7 +144,7 @@ public class LeafConnect {
      * @return this instance
      */
     public LeafConnect onRejected(Consumer<Rejection> listener) {
-        rejectionListeners.add(listener);
+        rejectionListeners.add(notNull(listener));
         return this;
     }
 
@@ -244,9 +245,10 @@ public class LeafConnect {
     @SuppressWarnings("deprecation")
     private void handle(UUID playerId, String playerName, Object player, byte[] data, Transport transport) {
         JsonObject msg;
+        String text = new String(data, Json.UTF_8);
         try {
-            if (Json.tooDeep(data, 64)) throw new IllegalArgumentException("too deep");
-            JsonElement e = new JsonParser().parse(new String(data, Json.UTF_8));
+            if (!Json.strictWithin(text, 64)) throw new IllegalArgumentException("not strict JSON or too deep");
+            JsonElement e = new JsonParser().parse(text);
             if (!e.isJsonObject()) throw new IllegalArgumentException("not an object");
             msg = e.getAsJsonObject();
         } catch (RuntimeException e) {
@@ -264,15 +266,20 @@ public class LeafConnect {
             if (log.debugEnabled()) log.debug("ignored " + Json.clean(type, 64) + " from " + playerName + " before hello");
             return;
         }
+        if (!s.messageRate.take(1, now())) {
+            if (log.debugEnabled()) log.debug("ignored " + Json.clean(type, 64) + " from " + playerName + ": more than "
+                    + Session.MESSAGES_PER_SECOND + " messages per second");
+            return;
+        }
         if ("click".equals(type)) {
             click(s, msg);
         } else if ("closed".equals(type)) {
             Closed closed = new Closed(s, Json.getString(msg, "what"), Json.getString(msg, "id"), Json.getString(msg, "why"));
             s.noteClosed(closed);
-            fire(closedListeners, closed, "closed");
+            fire(closedListeners, closed, "closed", s);
         } else if ("prefs".equals(type)) {
             s.updatePrefs(Prefs.parse(msg));
-            fire(prefsListeners, s, "prefs");
+            fire(prefsListeners, s, "prefs", s);
         } else if ("error".equals(type)) {
             String ref = Json.clean(Json.getString(msg, "ref"), 64);
             ClientError error = new ClientError(s, String.valueOf(Json.clean(Json.getString(msg, "code"), 64)), ref,
@@ -281,7 +288,7 @@ public class LeafConnect {
                 String line = s.warnings.admit(error.toString(), now());
                 if (line != null) log.warn(line);
             }
-            fire(errorListeners, error, "error");
+            fire(errorListeners, error, "error", s);
         } else if (log.debugEnabled()) {
             log.debug("ignored " + Json.clean(type, 64) + " from " + playerName);
         }
@@ -302,7 +309,7 @@ public class LeafConnect {
         synchronized (sessions) {
             s = sessions.remove(playerId);
         }
-        if (s != null) fire(quitListeners, s, "quit");
+        if (s != null) fire(quitListeners, s, "quit", s);
     }
 
     /**
@@ -310,21 +317,60 @@ public class LeafConnect {
      * The platform adapters call it every tick or every 50 ms.
      */
     public void flush() {
-        for (Session s : sessions.values()) flushSession(s);
+        for (Session s : sessions.values()) {
+            try {
+                flushSession(s);
+            } catch (RuntimeException e) {
+                failed(s, "could not flush the Server Connect session of " + s.name(), e);
+            }
+        }
     }
 
     void flushSession(Session s) {
         synchronized (s.sendLock) {
             List<byte[]> frames = s.drain(now());
-            for (byte[] frame : frames) {
+            for (int i = 0; i < frames.size(); i++) {
                 try {
-                    s.transport().send(frame);
+                    s.transport().send(frames.get(i));
                 } catch (RuntimeException e) {
-                    log.error("could not send a Server Connect message to " + s.name(), e);
+                    s.keepUnsent(frames.subList(i + 1, frames.size()));
+                    failed(s, "could not send a Server Connect message to " + s.name(), e);
                     return;
                 }
             }
         }
+    }
+
+    /**
+     * Called once for each new session, after the client said hello with a supported protocol and before the
+     * {@link #onReady} listeners run. A hello again on the same connection does not call it.
+     *
+     * @param session the new session
+     * @param transport the transport the session sends with
+     */
+    protected void started(Session session, Transport transport) {
+    }
+
+    /**
+     * Returns the world the player is in, compared by {@code equals}. A click on a block panel sent while the player
+     * was in another world is rejected with {@link Rejection.Reason#OUT_OF_REACH}. This base version returns null,
+     * which skips the check; platform adapters override it.
+     *
+     * @param session the session
+     * @return the world, or null if unknown
+     */
+    protected Object worldOf(Session session) {
+        return null;
+    }
+
+    void failed(Session s, String message, Throwable error) {
+        String line = (s != null ? s.failures : failures).admit(message, now());
+        if (line != null) log.error(line, error);
+    }
+
+    private static <T> T notNull(T listener) {
+        if (listener == null) throw new NullPointerException("listener");
+        return listener;
     }
 
     private void hello(UUID playerId, String playerName, Object player, JsonObject msg, Transport transport) {
@@ -349,49 +395,58 @@ public class LeafConnect {
             return;
         }
         Session s;
+        boolean fresh;
         synchronized (sessions) {
             s = sessions.get(playerId);
-            if (s != null && s.player() == player) {
-                s.rehello(info, prefs);
-            } else {
+            fresh = s == null || s.player() != player;
+            if (fresh) {
                 s = new Session(this, playerId, playerName, player, transport, info, prefs);
                 sessions.put(playerId, s);
+            } else {
+                s.rehello(info, prefs);
             }
         }
-        if (log.debugEnabled()) log.debug("hello from " + playerName + ": " + Json.clean(info.toString(), 512));
-        fire(readyListeners, s, "ready");
+        if (fresh) {
+            try {
+                started(s, transport);
+            } catch (RuntimeException e) {
+                failed(s, "could not start the Server Connect session of " + playerName, e);
+            }
+        }
+        if (log.debugEnabled()) log.debug("hello from " + playerName + ": " + info);
+        fire(readyListeners, s, "ready", s);
     }
 
     private void click(Session s, JsonObject msg) {
         Session.Resolved r = s.resolveClick(msg, now());
         if (r.rejection != null) {
-            if (!r.unknown && log.debugEnabled()) log.debug(Json.clean(r.rejection.toString(), 512));
-            fire(rejectionListeners, r.rejection, "rejected");
+            if (!r.unknown && log.debugEnabled()) log.debug(r.rejection.toString());
+            fire(rejectionListeners, r.rejection, "rejected", s);
             return;
         }
         if (r.click.anchor() != null && !inReach(s, r.click.anchor())) {
-            Rejection far = new Rejection(s, Rejection.Reason.OUT_OF_REACH, "player is too far from world panel " + r.click.panel(),
-                    r.click.panel(), r.click.button(), r.click.seq());
-            if (log.debugEnabled()) log.debug(Json.clean(far.toString(), 512));
-            fire(rejectionListeners, far, "rejected");
+            Rejection far = new Rejection(s, Rejection.Reason.OUT_OF_REACH, r.click.panel(), r.click.button(), r.click.seq(),
+                    "player is too far from world panel ", r.click.panel());
+            if (log.debugEnabled()) log.debug(far.toString());
+            fire(rejectionListeners, far, "rejected", s);
             return;
         }
         if (r.handler != null) {
             try {
                 r.handler.accept(r.click);
             } catch (RuntimeException e) {
-                log.error("click handler for " + r.click.panel() + "/" + r.click.button() + " failed", e);
+                failed(s, "click handler for " + r.click.panel() + "/" + r.click.button() + " failed", e);
             }
         }
-        fire(clickListeners, r.click, "click");
+        fire(clickListeners, r.click, "click", s);
     }
 
-    private <T> void fire(List<Consumer<T>> listeners, T value, String what) {
+    private <T> void fire(List<Consumer<T>> listeners, T value, String what, Session s) {
         for (Consumer<T> l : listeners) {
             try {
                 l.accept(value);
             } catch (RuntimeException e) {
-                log.error("Server Connect " + what + " listener failed", e);
+                failed(s, "Server Connect " + what + " listener failed", e);
             }
         }
     }

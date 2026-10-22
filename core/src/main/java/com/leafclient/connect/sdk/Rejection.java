@@ -30,22 +30,24 @@ public final class Rejection {
         /** The form held an unknown input or a value the inputs cannot produce. */
         BAD_INPUTS,
         /** The player was too far from the world panel. See {@link WorldAnchor#maxClickDistance()}. */
-        OUT_OF_REACH
+        OUT_OF_REACH,
+        BAD_DATA
     }
 
     private final Session session;
     private final Reason reason;
-    private final String detail;
+    private final Object[] detailParts;
+    private String detail;
     private final String panel;
     private final String button;
     private final long seq;
 
-    Rejection(Session session, Reason reason, String detail, String panel, String button, long seq) {
+    Rejection(Session session, Reason reason, String panel, String button, long seq, Object... detailParts) {
         this.session = session;
         this.reason = reason;
-        this.detail = detail;
-        this.panel = panel;
-        this.button = button;
+        this.detailParts = detailParts;
+        this.panel = Json.clean(panel, Limits.ID_CHARS);
+        this.button = Json.clean(button, Limits.ID_CHARS);
         this.seq = seq;
     }
 
@@ -72,7 +74,12 @@ public final class Rejection {
      *
      * @return the detail
      */
-    public String detail() {
+    public synchronized String detail() {
+        if (detail == null) {
+            StringBuilder sb = new StringBuilder();
+            for (Object part : detailParts) sb.append(part);
+            detail = Json.clean(sb.toString(), 512);
+        }
         return detail;
     }
 
@@ -105,6 +112,6 @@ public final class Rejection {
 
     @Override
     public String toString() {
-        return "rejected click " + panel + "/" + button + " seq=" + seq + " from " + session.name() + ": " + reason + " (" + detail + ")";
+        return "rejected click " + panel + "/" + button + " seq=" + seq + " from " + session.name() + ": " + reason + " (" + detail() + ")";
     }
 }

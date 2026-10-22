@@ -1,10 +1,14 @@
 package com.leafclient.connect.sdk;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Something the client does when the player presses a button, toast button or waypoint. A button runs its actions
@@ -394,6 +398,18 @@ public final class Action {
     static boolean anySends(List<Action> actions) {
         for (Action a : actions) if (a.sends()) return true;
         return false;
+    }
+
+    static Set<String> sentData(List<Action> actions) {
+        if (actions == null) return Collections.singleton(null);
+        Set<String> out = null;
+        for (Action a : actions) {
+            if (!a.sends()) continue;
+            if (out == null) out = new HashSet<String>();
+            JsonElement data = a.fields.get("data");
+            out.add(data == null ? null : data.getAsString());
+        }
+        return out == null ? Collections.<String>emptySet() : out;
     }
 
     private void requireWaypoint(String field) {
