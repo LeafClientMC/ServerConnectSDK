@@ -17,7 +17,7 @@ public final class Rejection {
         UNKNOWN_PANEL,
         /** The token did not match the last {@code panel.set}, patch, toast or waypoint with that id. */
         BAD_TOKEN,
-        /** The panel or toast has no button with that id, or a waypoint click was not on its label. */
+        /** The panel or toast has no button with that id, the button has no send action, or a waypoint click was not on its label. */
         UNKNOWN_BUTTON,
         /** The button was sent disabled. */
         DISABLED,
@@ -29,8 +29,9 @@ public final class Rejection {
         WRONG_SOURCE,
         /** The form held an unknown input or a value the inputs cannot produce. */
         BAD_INPUTS,
-        /** The player was too far from the world panel. See {@link WorldAnchor#maxClickDistance()}. */
+        /** The player was too far from the world panel, or not in the world or dimension of a block panel. See {@link WorldAnchor#maxClickDistance()}. */
         OUT_OF_REACH,
+        /** The click carried data that none of the button's {@link Action#send(String)} actions sends. */
         BAD_DATA
     }
 
